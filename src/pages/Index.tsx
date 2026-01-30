@@ -1,14 +1,75 @@
-// Update this page (the content is just a fallback if you fail to update the page)
+import { Layout } from '@/components/Layout';
+import { ProductCard } from '@/components/ProductCard';
+import { CategoryCard } from '@/components/CategoryCard';
+import { useProducts } from '@/hooks/useProducts';
+import { CATEGORY_LABELS, type ProductCategory } from '@/types/product';
+import { Skeleton } from '@/components/ui/skeleton';
 
-const Index = () => {
+const CATEGORIES = Object.keys(CATEGORY_LABELS) as ProductCategory[];
+
+export default function Index() {
+  const { data: products, isLoading } = useProducts();
+
   return (
-    <div className="flex min-h-screen items-center justify-center bg-background">
-      <div className="text-center">
-        <h1 className="mb-4 text-4xl font-bold">Welcome to Your Blank App</h1>
-        <p className="text-xl text-muted-foreground">Start building your amazing project here!</p>
-      </div>
-    </div>
-  );
-};
+    <Layout>
+      <div className="space-y-8">
+        {/* Hero */}
+        <section className="text-center space-y-3 animate-fade-in">
+          <h1 className="text-2xl font-bold text-foreground">
+            Achados & Ofertas 🛍️
+          </h1>
+          <p className="text-muted-foreground">
+            Os melhores produtos com os menores preços
+          </p>
+        </section>
 
-export default Index;
+        {/* Categories */}
+        <section className="space-y-4">
+          <h2 className="text-lg font-semibold text-foreground">
+            Categorias
+          </h2>
+          <div className="grid grid-cols-4 gap-3">
+            {CATEGORIES.map((category) => (
+              <CategoryCard key={category} category={category} />
+            ))}
+          </div>
+        </section>
+
+        {/* Products */}
+        <section className="space-y-4">
+          <h2 className="text-lg font-semibold text-foreground">
+            Destaques
+          </h2>
+          
+          {isLoading ? (
+            <div className="grid grid-cols-2 gap-4">
+              {[...Array(4)].map((_, i) => (
+                <div key={i} className="space-y-3">
+                  <Skeleton className="aspect-square rounded-2xl" />
+                  <Skeleton className="h-4 w-3/4" />
+                  <Skeleton className="h-5 w-1/2" />
+                </div>
+              ))}
+            </div>
+          ) : products && products.length > 0 ? (
+            <div className="grid grid-cols-2 gap-4">
+              {products.map((product) => (
+                <ProductCard key={product.id} product={product} />
+              ))}
+            </div>
+          ) : (
+            <div className="text-center py-12 space-y-4">
+              <span className="text-4xl">📦</span>
+              <p className="text-muted-foreground">
+                Nenhum produto disponível ainda.
+              </p>
+              <p className="text-sm text-muted-foreground">
+                Adicione produtos pelo painel de administração.
+              </p>
+            </div>
+          )}
+        </section>
+      </div>
+    </Layout>
+  );
+}
