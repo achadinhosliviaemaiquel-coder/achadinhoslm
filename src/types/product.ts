@@ -6,7 +6,7 @@ export type ProductCategory =
   | 'esportes' 
   | 'infantil' 
   | 'pets' 
-  | 'outros';
+  | 'escritorio';
 
 export interface Product {
   id: string;
@@ -41,7 +41,7 @@ export const CATEGORY_LABELS: Record<ProductCategory, string> = {
   esportes: 'Esportes',
   infantil: 'Infantil',
   pets: 'Pets',
-  outros: 'Outros',
+  escritorio: 'Escritório',
 };
 
 export const CATEGORY_ICONS: Record<ProductCategory, string> = {
@@ -52,5 +52,5 @@ export const CATEGORY_ICONS: Record<ProductCategory, string> = {
   esportes: '⚽',
   infantil: '🧸',
   pets: '🐾',
-  outros: '🎁',
+  escritorio: '🖊️',
 };
