@@ -18,16 +18,6 @@ export function Layout({ children, showFooter = true }: LayoutProps) {
 
       {/* Redes sociais */}
       <div className="flex justify-center gap-6 py-4 text-muted-foreground">
-        
-        {/* WhatsApp */}
-        <a
-          href="SEU_LINK_WHATSAPP"
-          target="_blank"
-          rel="noopener noreferrer"
-          className="hover:text-green-500 transition-colors"
-        >
-          <MessageCircle size={22} />
-        </a>
 
         {/* Instagram */}
         <a
