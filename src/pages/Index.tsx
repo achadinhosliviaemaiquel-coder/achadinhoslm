@@ -22,6 +22,31 @@ export default function Index() {
             Os melhores produtos com os menores preços
           </p>
         </section>
+        <section className="space-y-3 px-2">
+          <a
+            href="https://whatsapp.com/channel/0029VbCHBwUGzzKIsFbuHR15"
+            target="_blank"
+            className="block bg-green-500 text-white text-center py-3 rounded-xl font-semibold shadow-md"
+          >
+            📲 Canal de ofertas no WhatsApp
+          </a>
+
+          <a
+            href="https://t.me/achadinhosliviamaiquel"
+            target="_blank"
+            className="block bg-blue-500 text-white text-center py-3 rounded-xl font-semibold shadow-md"
+          >
+            ✈️ Canal de ofertas no Telegram
+          </a>
+
+          <a
+            href="https://chat.whatsapp.com/Bvyh4RUuNA32qVtlHgiZJu"
+            target="_blank"
+            className="block bg-emerald-600 text-white text-center py-3 rounded-xl font-semibold shadow-md"
+          >
+            👥 Grupo VIP no WhatsApp
+          </a>
+        </section>
 
         {/* Categories */}
         <section className="space-y-4">
@@ -40,7 +65,7 @@ export default function Index() {
           <h2 className="text-lg font-semibold text-foreground">
             Destaques
           </h2>
-          
+
           {isLoading ? (
             <div className="grid grid-cols-2 gap-4">
               {[...Array(4)].map((_, i) => (

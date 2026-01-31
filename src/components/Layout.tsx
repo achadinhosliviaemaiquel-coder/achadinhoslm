@@ -1,5 +1,6 @@
 import { Header } from './Header';
 import { Footer } from './Footer';
+import { Instagram, Youtube, MessageCircle, Send } from "lucide-react";
 
 interface LayoutProps {
   children: React.ReactNode;
@@ -16,10 +17,48 @@ export function Layout({ children, showFooter = true }: LayoutProps) {
       </main>
 
       {/* Redes sociais */}
-      <div className="flex justify-center gap-6 py-4 text-muted-foreground text-sm">
-        <a href="https://www.instagram.com/achadosliviamaiquel/" target="_blank" rel="noopener noreferrer">📸 Instagram</a>
-        <a href="https://www.tiktok.com/@achadosliviamaiquel" target="_blank" rel="noopener noreferrer">🎵 TikTok</a>
-        <a href="https://www.youtube.com/@AchadinhosLiviaeMaiquel" target="_blank" rel="noopener noreferrer">▶️ YouTube</a>
+      <div className="flex justify-center gap-6 py-4 text-muted-foreground">
+        
+        {/* WhatsApp */}
+        <a
+          href="SEU_LINK_WHATSAPP"
+          target="_blank"
+          rel="noopener noreferrer"
+          className="hover:text-green-500 transition-colors"
+        >
+          <MessageCircle size={22} />
+        </a>
+
+        {/* Instagram */}
+        <a
+          href="https://www.instagram.com/achadosliviamaiquel/"
+          target="_blank"
+          rel="noopener noreferrer"
+          className="hover:text-pink-500 transition-colors"
+        >
+          <Instagram size={22} />
+        </a>
+
+        {/* TikTok (ícone alternativo) */}
+        <a
+          href="https://www.tiktok.com/@achadosliviamaiquel"
+          target="_blank"
+          rel="noopener noreferrer"
+          className="hover:text-black transition-colors"
+        >
+          <Send size={22} />
+        </a>
+
+        {/* YouTube */}
+        <a
+          href="https://www.youtube.com/@AchadinhosLiviaeMaiquel"
+          target="_blank"
+          rel="noopener noreferrer"
+          className="hover:text-red-500 transition-colors"
+        >
+          <Youtube size={22} />
+        </a>
+
       </div>
 
       {showFooter && <Footer />}
