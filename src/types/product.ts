@@ -1,12 +1,13 @@
-export type ProductCategory = 
-  | 'moda' 
-  | 'beleza' 
-  | 'casa' 
-  | 'eletronicos' 
-  | 'esportes' 
-  | 'infantil' 
-  | 'pets' 
-  | 'escritorio';
+export type ProductCategory =
+  | "moda"
+  | "beleza"
+  | "casa"
+  | "eletronicos"
+  | "eletrodomesticos"
+  | "suplementos"
+  | "infantil"
+  | "pets"
+  | "escritorio";
 
 export interface Product {
   id: string;
@@ -28,29 +29,31 @@ export interface Product {
 }
 
 export interface AffiliateLink {
-  store: 'shopee' | 'mercadolivre' | 'amazon';
+  store: "shopee" | "mercadolivre" | "amazon";
   url: string;
   label: string;
 }
 
 export const CATEGORY_LABELS: Record<ProductCategory, string> = {
-  moda: 'Moda',
-  beleza: 'Beleza',
-  casa: 'Casa',
-  eletronicos: 'Eletrônicos',
-  esportes: 'Esportes',
-  infantil: 'Infantil',
-  pets: 'Pets',
-  escritorio: 'Escritório',
+  moda: "Moda",
+  beleza: "Beleza",
+  casa: "Casa",
+  eletronicos: "Eletrônicos",
+  eletrodomesticos: "Eletrodomésticos",
+  suplementos: "Suplementos",
+  infantil: "Infantil",
+  pets: "Pets",
+  escritorio: "Escritório",
 };
 
 export const CATEGORY_ICONS: Record<ProductCategory, string> = {
-  moda: '👗',
-  beleza: '💄',
-  casa: '🏠',
-  eletronicos: '📱',
-  esportes: '⚽',
-  infantil: '🧸',
-  pets: '🐾',
-  escritorio: '🖊️',
+  beleza: "✨",
+  casa: "🏠",
+  eletronicos: "📱",
+  eletrodomesticos: "🍳",
+  escritorio: "💼",
+  infantil: "🧸",
+  moda: "🛍️",
+  pets: "🐾",
+  suplementos: "💊",
 };

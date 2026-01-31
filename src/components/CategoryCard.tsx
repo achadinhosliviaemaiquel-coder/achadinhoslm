@@ -5,7 +5,8 @@ import {
   Sparkles,
   Home,
   Smartphone,
-  Gamepad2,
+  Microwave,
+  Dumbbell,
   Baby,
   PawPrint,
   Briefcase
@@ -16,14 +17,15 @@ interface CategoryCardProps {
 }
 
 const ICONS: Record<ProductCategory, any> = {
-  moda: ShoppingBag,
   beleza: Sparkles,
   casa: Home,
   eletronicos: Smartphone,
-  esportes: Gamepad2,
-  infantil: Baby,
-  pets: PawPrint,
+  eletrodomesticos: Microwave,
   escritorio: Briefcase,
+  infantil: Baby,
+  moda: ShoppingBag,
+  pets: PawPrint,
+  suplementos: Dumbbell,
 };
 
 export function CategoryCard({ category }: CategoryCardProps) {
@@ -34,12 +36,10 @@ export function CategoryCard({ category }: CategoryCardProps) {
       <div className="bg-white rounded-2xl p-5 shadow-md border border-gray-100 transition-all duration-300 hover:shadow-lg hover:-translate-y-1 hover:border-gray-200 text-center">
 
         {/* Ícone */}
-        <div className="mb-3 flex items-center justify-center h-12">
-          <Icon
-            size={30}
-            strokeWidth={1.6}
-            className={category === 'eletronicos' ? 'translate-y-[2px]' : ''}
-          />
+        <div className="mb-3 flex items-center justify-center">
+          <div className="w-14 h-14 rounded-xl bg-gray-100 flex items-center justify-center">
+            <Icon size={26} strokeWidth={1.8} />
+          </div>
         </div>
 
         {/* Nome da categoria */}

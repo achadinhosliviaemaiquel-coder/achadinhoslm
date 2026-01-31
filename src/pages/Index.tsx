@@ -5,7 +5,8 @@ import { useProducts } from '@/hooks/useProducts';
 import { CATEGORY_LABELS, type ProductCategory } from '@/types/product';
 import { Skeleton } from '@/components/ui/skeleton';
 
-const CATEGORIES = Object.keys(CATEGORY_LABELS) as ProductCategory[];
+const CATEGORIES = (Object.keys(CATEGORY_LABELS) as ProductCategory[])
+  .sort((a, b) => CATEGORY_LABELS[a].localeCompare(CATEGORY_LABELS[b]));
 
 export default function Index() {
   const { data: products, isLoading } = useProducts();
