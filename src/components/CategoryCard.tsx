@@ -43,7 +43,7 @@ export function CategoryCard({ category }: CategoryCardProps) {
         </div>
 
         {/* Nome da categoria */}
-        <h3 className="font-semibold text-sm text-gray-800">
+        <h3 className="font-semibold text-sm text-gray-800 leading-tight h-10 flex items-center justify-center px-1 text-center">
           {CATEGORY_LABELS[category]}
         </h3>
 

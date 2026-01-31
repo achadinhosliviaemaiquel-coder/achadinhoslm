@@ -68,7 +68,7 @@ export default function Index() {
           <h2 className="text-lg font-semibold text-foreground">
             Categorias
           </h2>
-          <div className="grid grid-cols-4 gap-4 mt-2">
+          <div className="grid grid-cols-3 gap-x-4 gap-y-5 mt-3">
             {CATEGORIES.map((category) => (
               <CategoryCard key={category} category={category} />
             ))}
