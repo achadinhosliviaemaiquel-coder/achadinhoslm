@@ -12,12 +12,19 @@ export function CategoryCard({ category }: CategoryCardProps) {
       className="group block animate-fade-in"
     >
       <div className="bg-card rounded-2xl p-6 shadow-soft transition-all duration-300 hover:shadow-card hover:-translate-y-1 text-center">
-        <span className="text-4xl mb-3 block group-hover:animate-bounce-subtle">
-          {CATEGORY_ICONS[category]}
-        </span>
+        
+        <div className="mb-3 flex items-center justify-center group-hover:animate-bounce-subtle">
+          <div className="w-14 h-14 flex items-center justify-center">
+            <span className="text-4xl leading-none translate-y-[1px]">
+              {CATEGORY_ICONS[category]}
+            </span>
+          </div>
+        </div>
+
         <h3 className="font-semibold text-foreground">
           {CATEGORY_LABELS[category]}
         </h3>
+
       </div>
     </Link>
   );
