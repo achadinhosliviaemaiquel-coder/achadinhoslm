@@ -52,8 +52,6 @@ export default function Index() {
 
         </section>
 
-      </section>
-
       {/* Categories */}
       <section className="space-y-4">
         <h2 className="text-lg font-semibold text-foreground">
