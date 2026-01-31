@@ -1,6 +1,6 @@
 import { Header } from './Header';
 import { Footer } from './Footer';
-import { Instagram, Youtube, MessageCircle, Send } from "lucide-react";
+import { Instagram, Youtube } from "lucide-react";
 
 interface LayoutProps {
   children: React.ReactNode;
@@ -29,14 +29,16 @@ export function Layout({ children, showFooter = true }: LayoutProps) {
           <Instagram size={22} />
         </a>
 
-        {/* TikTok (ícone alternativo) */}
+        {/* TikTok (SVG oficial) */}
         <a
           href="https://www.tiktok.com/@achadosliviamaiquel"
           target="_blank"
           rel="noopener noreferrer"
           className="hover:text-black transition-colors"
         >
-          <Send size={22} />
+          <svg width="22" height="22" viewBox="0 0 256 256" fill="currentColor">
+            <path d="M168 24v104.3a72 72 0 1 1-72-72c4.4 0 8.7.4 12.9 1.1v37.6a36 36 0 1 0 36.1 36V24h23z"/>
+          </svg>
         </a>
 
         {/* YouTube */}
