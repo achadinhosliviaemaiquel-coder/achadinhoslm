@@ -1,7 +1,8 @@
 import { useSearchParams } from "react-router-dom";
 import { Layout } from "@/components/Layout";
 import { useQuery } from "@tanstack/react-query";
-import { supabase } from "@/integrations/supabase/client";
+import { getSupabase } from "@/integrations/supabase/client";
+const supabase = getSupabase();
 import { Skeleton } from "@/components/ui/skeleton";
 import { ProductCard } from "@/components/ProductCard";
 import type { Product } from "@/types/product";
