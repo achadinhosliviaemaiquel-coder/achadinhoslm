@@ -1,30 +1,17 @@
 import { createClient } from "@supabase/supabase-js";
 import type { Database } from "./types";
 
-let supabaseInstance: ReturnType<typeof createClient<Database>> | null = null;
+const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
+const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
 
-export function getSupabase() {
-  if (supabaseInstance) return supabaseInstance;
+if (!supabaseUrl) throw new Error("VITE_SUPABASE_URL is missing");
+if (!supabaseAnonKey) throw new Error("VITE_SUPABASE_ANON_KEY is missing");
 
-  const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
-  const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
-
-  if (!supabaseUrl || !supabaseAnonKey) {
-    console.error("❌ SUPABASE ENV NÃO CARREGOU", {
-      url: supabaseUrl,
-      key: supabaseAnonKey,
-    });
-    throw new Error("Supabase env missing");
-  }
-
-  supabaseInstance = createClient<Database>(supabaseUrl, supabaseAnonKey, {
-    auth: {
-      storage: localStorage,
-      persistSession: true,
-      autoRefreshToken: true,
-      detectSessionInUrl: true,
-    },
-  });
-
-  return supabaseInstance;
-}
+export const supabase = createClient<Database>(supabaseUrl, supabaseAnonKey, {
+  auth: {
+    storage: localStorage,
+    persistSession: true,
+    autoRefreshToken: true,
+    detectSessionInUrl: true,
+  },
+});
