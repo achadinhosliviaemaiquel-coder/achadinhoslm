@@ -1,9 +1,14 @@
-import type { Config } from "tailwindcss";
+import type { Config } from "tailwindcss"
 
 export default {
   darkMode: ["class"],
-  content: ["./pages/**/*.{ts,tsx}", "./components/**/*.{ts,tsx}", "./app/**/*.{ts,tsx}", "./src/**/*.{ts,tsx}"],
-  prefix: "",
+
+  // 🔥 v4 precisa incluir index.html também
+  content: [
+    "./index.html",
+    "./src/**/*.{ts,tsx}",
+  ],
+
   theme: {
     container: {
       center: true,
@@ -16,16 +21,20 @@ export default {
         "2xl": "1280px",
       },
     },
+
     extend: {
       fontFamily: {
         sans: ["'Plus Jakarta Sans'", "system-ui", "sans-serif"],
       },
+
+      // ✅ Cores base necessárias pro v4 reconhecer bg-background etc
       colors: {
         border: "hsl(var(--border))",
         input: "hsl(var(--input))",
         ring: "hsl(var(--ring))",
         background: "hsl(var(--background))",
         foreground: "hsl(var(--foreground))",
+
         primary: {
           DEFAULT: "hsl(var(--primary))",
           foreground: "hsl(var(--primary-foreground))",
@@ -54,6 +63,7 @@ export default {
           DEFAULT: "hsl(var(--card))",
           foreground: "hsl(var(--card-foreground))",
         },
+
         shopee: {
           DEFAULT: "hsl(var(--shopee))",
           foreground: "hsl(var(--shopee-foreground))",
@@ -66,6 +76,7 @@ export default {
           DEFAULT: "hsl(var(--amazon))",
           foreground: "hsl(var(--amazon-foreground))",
         },
+
         sidebar: {
           DEFAULT: "hsl(var(--sidebar-background))",
           foreground: "hsl(var(--sidebar-foreground))",
@@ -77,6 +88,7 @@ export default {
           ring: "hsl(var(--sidebar-ring))",
         },
       },
+
       borderRadius: {
         lg: "var(--radius)",
         md: "calc(var(--radius) - 2px)",
@@ -84,6 +96,7 @@ export default {
         xl: "calc(var(--radius) + 4px)",
         "2xl": "calc(var(--radius) + 8px)",
       },
+
       keyframes: {
         "accordion-down": {
           from: { height: "0" },
@@ -98,15 +111,20 @@ export default {
           "50%": { opacity: "0.7" },
         },
       },
+
       animation: {
         "accordion-down": "accordion-down 0.2s ease-out",
         "accordion-up": "accordion-up 0.2s ease-out",
         "pulse-soft": "pulse-soft 2s ease-in-out infinite",
       },
+
       maxWidth: {
         mobile: "480px",
       },
     },
   },
-  plugins: [require("tailwindcss-animate")],
-} satisfies Config;
+
+  plugins: [
+    require("tailwindcss-animate"),
+  ],
+} satisfies Config

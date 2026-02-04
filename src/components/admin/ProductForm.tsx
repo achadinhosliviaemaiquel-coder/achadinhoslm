@@ -1,332 +1,291 @@
-import { useState } from 'react';
-import { useForm } from 'react-hook-form';
-import { zodResolver } from '@hookform/resolvers/zod';
-import { z } from 'zod';
-import { Button } from '@/components/ui/button';
-import { Input } from '@/components/ui/input';
-import { Textarea } from '@/components/ui/textarea';
-import { Label } from '@/components/ui/label';
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
-import { useCreateProduct, useUpdateProduct } from '@/hooks/useProducts';
-import { useToast } from '@/hooks/use-toast';
-import { CATEGORY_LABELS, type Product, type ProductCategory } from '@/types/product';
-import { Loader2 } from 'lucide-react';
+import { useState, useEffect, useRef } from 'react'
+import { useForm, Controller } from 'react-hook-form'
+import { zodResolver } from '@hookform/resolvers/zod'
+import { z } from 'zod'
+import { Button } from '@/components/ui/button'
+import { Input } from '@/components/ui/input'
+import { Textarea } from '@/components/ui/textarea'
+import { Label } from '@/components/ui/label'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
+import { useCreateProduct, useUpdateProduct } from '@/hooks/useProducts'
+import { useBrands } from '@/hooks/useBrands'
+import { useToast } from '@/hooks/use-toast'
+import { CATEGORY_LABELS, type Product, type ProductCategory } from '@/types/product'
+import { Loader2 } from 'lucide-react'
+import BrandFormModal from '@/components/admin/BrandFormModal'
 
-const productSchema = z.object({
-  name: z.string().min(1, 'Nome é obrigatório').max(200),
-  slug: z.string().min(1, 'Slug é obrigatório').regex(/^[a-z0-9-]+$/, 'Slug deve conter apenas letras minúsculas, números e hífens'),
-  category: z.string().min(1, 'Categoria é obrigatória'),
-  subcategory: z.string().optional(),
-  description: z.string().optional(),
-  benefits: z.string().optional(),
-  price_label: z.string().min(1, 'Preço é obrigatório'),
-  urgency_label: z.string().optional(),
-  image_urls: z.string().optional(),
-  shopee_link: z.string().url('URL inválida').optional().or(z.literal('')),
-  mercadolivre_link: z.string().url('URL inválida').optional().or(z.literal('')),
-  amazon_link: z.string().url('URL inválida').optional().or(z.literal('')),
-});
-
-type ProductFormData = z.infer<typeof productSchema>;
-
-interface ProductFormProps {
-  product?: Product;
-  onSuccess?: () => void;
+const SUBCATEGORY_OPTIONS: Record<string, { value: string; label: string; keywords: string[] }[]> = {
+  beleza: [
+    { value: "limpeza", label: "Limpeza Facial", keywords: ["gel", "sabonete", "limpeza", "cleanser"] },
+    { value: "hidratante", label: "Hidratantes", keywords: ["hidratante", "creme", "loção", "locao"] },
+    { value: "protetor_solar", label: "Protetor Solar", keywords: ["protetor", "solar", "fps"] },
+    { value: "tratamento", label: "Tratamentos", keywords: ["serum", "ácido", "acido", "antiacne", "reparador"] },
+    { value: "capilar", label: "Capilar", keywords: ["shampoo", "condicionador", "capilar"] },
+    { value: "kits", label: "Kits", keywords: ["kit", "combo"] },
+  ],
+  casa: [
+    { value: "cama", label: "Cama", keywords: ["lencol", "travesseiro", "manta"] },
+    { value: "banho", label: "Banho", keywords: ["toalha", "tapete", "banheiro"] },
+    { value: "cozinha", label: "Cozinha", keywords: ["cafeteira", "panela", "faca", "mixer", "microondas", "forno"] },
+    { value: "limpeza", label: "Limpeza", keywords: ["mop", "aspirador", "pano"] },
+    { value: "organizacao", label: "Organização", keywords: ["organizador", "caixa", "gaveta"] },
+  ],
+  eletrodomesticos: [
+    { value: "airfryer", label: "Air Fryers", keywords: ["airfryer"] },
+    { value: "microondas", label: "Micro-ondas", keywords: ["microondas"] },
+    { value: "aspirador", label: "Aspiradores", keywords: ["aspirador"] },
+    { value: "cafeteira", label: "Cafeteiras Elétricas", keywords: ["cafeteira"] },
+    { value: "forno", label: "Fornos Elétricos", keywords: ["forno"] },
+  ],
+  eletronicos: [
+    { value: "audio", label: "Áudio", keywords: ["fone", "bluetooth", "headset"] },
+    { value: "imagem", label: "Imagem", keywords: ["camera", "projetor"] },
+    { value: "seguranca", label: "Segurança", keywords: ["fechadura"] },
+    { value: "automotivo", label: "Automotivo", keywords: ["carplay"] },
+  ],
+  escritorio: [
+    { value: "papelaria", label: "Papelaria", keywords: ["lápis", "caneta", "giz", "papel"] },
+    { value: "mochilas", label: "Mochilas e Estojos", keywords: ["mochila", "estojo"] },
+    { value: "cadernos", label: "Cadernos", keywords: ["caderno"] },
+  ],
+  infantil: [
+    { value: "brinquedos", label: "Brinquedos", keywords: ["brinquedo"] },
+    { value: "roupas", label: "Roupas Infantis", keywords: ["roupa"] },
+    { value: "calcados-infantis", label: "Calçados Infantis", keywords: ["tênis", "tenis"] },
+  ],
+  moda: [
+    { value: "vestidos", label: "Vestidos", keywords: ["vestido"] },
+    { value: "acessorios", label: "Acessórios", keywords: ["colar", "pulseira"] },
+    { value: "intimos", label: "Roupas Íntimas", keywords: ["cueca", "sutiã", "sutia", "meia"] },
+    { value: "academia", label: "Roupas de Academia", keywords: ["short", "regata", "top"] },
+  ],
+  pets: [
+    { value: "brinquedos", label: "Brinquedos", keywords: ["brinquedo"] },
+    { value: "racoes", label: "Rações", keywords: ["ração", "racao"] },
+    { value: "higiene", label: "Higiene", keywords: ["shampoo", "cortador"] },
+    { value: "caixas", label: "Armazenamento", keywords: ["caixa"] },
+  ],
+  suplementos: [
+    { value: "creatina", label: "Creatina", keywords: ["creatina"] },
+    { value: "whey", label: "Whey", keywords: ["whey"] },
+    { value: "pretreino", label: "Pré-Treino", keywords: ["pre", "pré"] },
+  ],
 }
 
-export function ProductForm({ product, onSuccess }: ProductFormProps) {
-  const [isSubmitting, setIsSubmitting] = useState(false);
-  const createProduct = useCreateProduct();
-  const updateProduct = useUpdateProduct();
-  const { toast } = useToast();
+const emptyToNull = (v: unknown) =>
+  typeof v === "string" && v.trim() === "" ? null : v
 
-  const {
-    register,
-    handleSubmit,
-    setValue,
-    watch,
-    reset,
-    formState: { errors },
-  } = useForm<ProductFormData>({
+const productSchema = z.object({
+  name: z.string().min(1),
+  slug: z.string().min(1),
+  category: z.string().min(1),
+  brand_slug: z.string().min(1),
+  subcategory: z.preprocess(emptyToNull, z.string().nullable().optional()),
+  description: z.preprocess(emptyToNull, z.string().nullable().optional()),
+  benefits: z.preprocess(emptyToNull, z.string().nullable().optional()),
+  price_label: z.string().min(1),
+  image_urls: z.preprocess(emptyToNull, z.string().nullable().optional()),
+  shopee_price: z.coerce.number().nullable().optional(),
+  mercadolivre_price: z.coerce.number().nullable().optional(),
+  amazon_price: z.coerce.number().nullable().optional(),
+  shopee_link: z.preprocess(emptyToNull, z.string().url().nullable().optional()),
+  mercadolivre_link: z.preprocess(emptyToNull, z.string().url().nullable().optional()),
+  amazon_link: z.preprocess(emptyToNull, z.string().url().nullable().optional()),
+})
+
+type ProductFormData = z.infer<typeof productSchema>
+
+interface Props {
+  product?: Product
+  onSuccess?: () => void
+}
+
+export function ProductForm({ product, onSuccess }: Props) {
+  const [isSubmitting, setIsSubmitting] = useState(false)
+  const [brandModalOpen, setBrandModalOpen] = useState(false)
+
+  const createProduct = useCreateProduct()
+  const updateProduct = useUpdateProduct()
+  const { toast } = useToast()
+
+  const { register, handleSubmit, setValue, watch, reset, control } = useForm<ProductFormData>({
     resolver: zodResolver(productSchema),
-    defaultValues: product ? {
-      name: product.name,
-      slug: product.slug,
-      category: product.category,
-      subcategory: product.subcategory || '',
-      description: product.description || '',
-      benefits: product.benefits?.join('\n') || '',
-      price_label: product.price_label,
-      urgency_label: product.urgency_label || '',
-      image_urls: product.image_urls?.join('\n') || '',
-      shopee_link: product.shopee_link || '',
-      mercadolivre_link: product.mercadolivre_link || '',
-      amazon_link: product.amazon_link || '',
-    } : undefined,
-  });
+    defaultValues: {
+      name: "",
+      slug: "",
+      category: "",       // 🔴 ESSENCIAL
+      brand_slug: "",     // 🔴 ESSENCIAL
+      subcategory: "",
+      description: "",
+      benefits: "",
+      image_urls: "",
+      price_label: "",
+    },
+  })
 
-  const category = watch('category');
+  /* ================= POPULAR FORM ================= */
+
+  useEffect(() => {
+    if (!product) return
+
+    reset({
+      name: product.name ?? "",
+      slug: product.slug ?? "",
+      category: product.categories?.slug ?? "",   // 🔥 AQUI ESTÁ A CORREÇÃO
+      brand_slug: product.brand_slug ?? "",
+      description: product.description ?? "",
+      benefits: product.benefits?.join('\n') ?? "",
+      image_urls: product.image_urls?.join('\n') ?? "",
+      price_label: product.price_label ?? "",
+      subcategory: product.subcategory ?? "",
+      shopee_link: product.shopee_link ?? "",
+      mercadolivre_link: product.mercadolivre_link ?? "",
+      amazon_link: product.amazon_link ?? "",
+      shopee_price: product.shopee_price ?? null,
+      mercadolivre_price: product.mercadolivre_price ?? null,
+      amazon_price: product.amazon_price ?? null,
+    })
+  }, [product, reset])
+
+  const category = watch('category') || ""
+  const name = watch('name')
+  const { data: brands, refetch } = useBrands(category, "admin")
+
+  const normalize = (text: string) =>
+    text.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "")
+
+  const handleNameChange = (value: string) => {
+    if (!product) {
+      const slug = normalize(value).replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '')
+      setValue('slug', slug)
+    }
+  }
+
+  /* ================= SUBMIT ================= */
 
   const onSubmit = async (data: ProductFormData) => {
-    setIsSubmitting(true);
-
+    setIsSubmitting(true)
     try {
       const productData = {
-        name: data.name,
-        slug: data.slug,
+        ...data,
         category: data.category as ProductCategory,
-        subcategory: data.subcategory || null,
-        description: data.description || null,
-        benefits: data.benefits?.split('\n').filter(Boolean) || [],
-        price_label: data.price_label,
-        urgency_label: data.urgency_label || null,
-        image_urls: data.image_urls?.split('\n').filter(Boolean) || [],
-        shopee_link: data.shopee_link || null,
-        mercadolivre_link: data.mercadolivre_link || null,
-        amazon_link: data.amazon_link || null,
+        benefits: data.benefits ? data.benefits.split('\n').map(b => b.trim()).filter(Boolean) : [],
+        image_urls: data.image_urls ? data.image_urls.split('\n').map(i => i.trim()).filter(Boolean) : [],
         is_active: true,
-      };
-
-      if (product) {
-        await updateProduct.mutateAsync({ id: product.id, ...productData });
-        toast({
-          title: 'Produto atualizado!',
-          description: 'As alterações foram salvas.',
-        });
-      } else {
-        await createProduct.mutateAsync(productData);
-        toast({
-          title: 'Produto criado!',
-          description: 'O produto foi adicionado ao catálogo.',
-        });
-        reset();
       }
 
-      onSuccess?.();
-    } catch (error) {
-      toast({
-        variant: 'destructive',
-        title: 'Erro',
-        description: error instanceof Error ? error.message : 'Ocorreu um erro ao salvar.',
-      });
-    } finally {
-      setIsSubmitting(false);
-    }
-  };
+      if (product) await updateProduct.mutateAsync({ id: product.id, ...productData })
+      else await createProduct.mutateAsync(productData)
 
-  // Auto-generate slug from name
-  const handleNameChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const name = e.target.value;
-    if (!product) {
-      const slug = name
-        .toLowerCase()
-        .normalize('NFD')
-        .replace(/[\u0300-\u036f]/g, '')
-        .replace(/[^a-z0-9]+/g, '-')
-        .replace(/^-|-$/g, '');
-      setValue('slug', slug);
+      toast({ title: product ? 'Produto atualizado!' : 'Produto criado!' })
+      reset()
+      onSuccess?.()
+    } catch {
+      toast({ variant: 'destructive', title: 'Erro ao salvar' })
+    } finally {
+      setIsSubmitting(false)
     }
-  };
+  }
+
+  /* ================= RESET SUBCATEGORIA ================= */
+
+  const previousCategoryRef = useRef<string | undefined>()
+  useEffect(() => {
+    if (!previousCategoryRef.current) {
+      previousCategoryRef.current = category
+      return
+    }
+    if (previousCategoryRef.current !== category) {
+      setValue("subcategory", "")
+    }
+    previousCategoryRef.current = category
+  }, [category, setValue])
+
+  /* ================= AUTODETECT SUBCATEGORIA ================= */
+
+  useEffect(() => {
+    if (!name || !category || !SUBCATEGORY_OPTIONS[category]) return
+    const normalized = name.toLowerCase()
+    const match = SUBCATEGORY_OPTIONS[category].find(sub =>
+      sub.keywords.some(k => normalized.includes(k))
+    )
+    if (match) setValue("subcategory", match.value)
+  }, [name, category, setValue])
 
   return (
-    <form onSubmit={handleSubmit(onSubmit)} className="space-y-6">
-      {/* Basic info */}
-      <div className="space-y-4">
-        <h2 className="font-semibold text-foreground">Informações Básicas</h2>
-        
-        <div className="space-y-2">
-          <Label htmlFor="name">Nome do Produto *</Label>
-          <Input
-            id="name"
-            {...register('name')}
-            onChange={(e) => {
-              register('name').onChange(e);
-              handleNameChange(e);
-            }}
-            placeholder="Ex: Vestido Floral Midi"
-          />
-          {errors.name && (
-            <p className="text-sm text-destructive">{errors.name.message}</p>
-          )}
-        </div>
+    <>
+      <form onSubmit={handleSubmit(onSubmit)} className="space-y-6">
+        <Input {...register('name')} onChange={(e) => { register('name').onChange(e); handleNameChange(e.target.value) }} placeholder="Nome do Produto" />
+        <Input {...register('slug')} placeholder="Slug" />
 
-        <div className="space-y-2">
-          <Label htmlFor="slug">Slug (URL) *</Label>
-          <Input
-            id="slug"
-            {...register('slug')}
-            placeholder="vestido-floral-midi"
-          />
-          {errors.slug && (
-            <p className="text-sm text-destructive">{errors.slug.message}</p>
-          )}
-        </div>
-
-        <div className="grid grid-cols-2 gap-4">
-          <div className="space-y-2">
-            <Label>Categoria *</Label>
-            <Select value={category} onValueChange={(value) => setValue('category', value)}>
-              <SelectTrigger>
-                <SelectValue placeholder="Selecione" />
-              </SelectTrigger>
+        {/* ✅ CATEGORIA AGORA REGISTRADA */}
+        <Controller
+          name="category"
+          control={control}
+          render={({ field }) => (
+            <Select value={field.value || ""} onValueChange={field.onChange}>
+              <SelectTrigger><SelectValue placeholder="Categoria" /></SelectTrigger>
               <SelectContent>
                 {Object.entries(CATEGORY_LABELS).map(([key, label]) => (
-                  <SelectItem key={key} value={key}>
-                    {label}
-                  </SelectItem>
+                  <SelectItem key={key} value={key}>{label}</SelectItem>
                 ))}
               </SelectContent>
             </Select>
-            {errors.category && (
-              <p className="text-sm text-destructive">{errors.category.message}</p>
-            )}
-          </div>
+          )}
+        />
 
-          <div className="space-y-2">
-            <Label htmlFor="subcategory">Subcategoria</Label>
-            <Input
-              id="subcategory"
-              {...register('subcategory')}
-              placeholder="Ex: Vestidos"
-            />
-          </div>
-        </div>
+        <Label>Marca</Label>
 
-        <div className="space-y-2">
-          <Label htmlFor="description">Descrição</Label>
-          <Textarea
-            id="description"
-            {...register('description')}
-            placeholder="Descreva o produto..."
-            rows={3}
-          />
-        </div>
+        {/* ✅ MARCA AGORA REGISTRADA */}
+        <Controller
+          name="brand_slug"
+          control={control}
+          render={({ field }) => (
+            <Select value={field.value || ""} onValueChange={field.onChange}>
+              <SelectTrigger><SelectValue placeholder="Marca" /></SelectTrigger>
+              <SelectContent>
+                {brands?.map((b) => <SelectItem key={b.slug} value={b.slug}>{b.name}</SelectItem>)}
+                <div className="border-t mt-2 pt-2">
+                  <button type="button" onClick={() => setBrandModalOpen(true)} className="text-sm text-primary hover:underline px-2 py-1">
+                    + Criar nova marca
+                  </button>
+                </div>
+              </SelectContent>
+            </Select>
+          )}
+        />
 
-        <div className="space-y-2">
-          <Label htmlFor="benefits">Benefícios (um por linha)</Label>
-          <Textarea
-            id="benefits"
-            {...register('benefits')}
-            placeholder="Tecido leve e confortável&#10;Estampa exclusiva&#10;Forro completo"
-            rows={4}
-          />
-        </div>
-      </div>
+        <Textarea {...register('description')} placeholder="Descrição" />
+        <Textarea {...register('benefits')} placeholder="Benefícios (1 por linha)" />
+        <Input {...register('price_label')} placeholder="R$ 89,90" />
 
-      {/* Price and urgency */}
-      <div className="space-y-4">
-        <h2 className="font-semibold text-foreground">Preço e Urgência</h2>
-        
-        <div className="grid grid-cols-2 gap-4">
-          <div className="space-y-2">
-            <Label htmlFor="price_label">Preço (texto) *</Label>
-            <Input
-              id="price_label"
-              {...register('price_label')}
-              placeholder="R$ 89,90"
-            />
-            {errors.price_label && (
-              <p className="text-sm text-destructive">{errors.price_label.message}</p>
-            )}
-          </div>
+        <Label>URLs das imagens (1 por linha)</Label>
+        <Textarea {...register('image_urls')} rows={3} />
 
-          <div className="space-y-2">
-            <Label htmlFor="urgency_label">Texto de Urgência</Label>
-            <Input
-              id="urgency_label"
-              {...register('urgency_label')}
-              placeholder="🔥 Últimas unidades!"
-            />
-          </div>
-        </div>
-      </div>
-
-      {/* Images */}
-      <div className="space-y-4">
-        <h2 className="font-semibold text-foreground">Imagens</h2>
-        
-        <div className="space-y-2">
-          <Label htmlFor="image_urls">URLs das imagens (uma por linha)</Label>
-          <Textarea
-            id="image_urls"
-            {...register('image_urls')}
-            placeholder="https://exemplo.com/imagem1.jpg&#10;https://exemplo.com/imagem2.jpg"
-            rows={3}
-          />
-        </div>
-      </div>
-
-      {/* Affiliate links */}
-      <div className="space-y-4">
-        <h2 className="font-semibold text-foreground">Links de Afiliado</h2>
-        
         <div className="space-y-4">
-          <div className="space-y-2">
-            <Label htmlFor="shopee_link" className="flex items-center gap-2">
-              <span className="w-5 h-5 rounded-full bg-shopee flex items-center justify-center">
-                <span className="text-shopee-foreground text-xs font-bold">S</span>
-              </span>
-              Link da Shopee
-            </Label>
-            <Input
-              id="shopee_link"
-              {...register('shopee_link')}
-              placeholder="https://shope.ee/..."
-            />
-            {errors.shopee_link && (
-              <p className="text-sm text-destructive">{errors.shopee_link.message}</p>
-            )}
-          </div>
-
-          <div className="space-y-2">
-            <Label htmlFor="mercadolivre_link" className="flex items-center gap-2">
-              <span className="w-5 h-5 rounded-full bg-mercadolivre flex items-center justify-center">
-                <span className="text-mercadolivre-foreground text-xs font-bold">M</span>
-              </span>
-              Link do Mercado Livre
-            </Label>
-            <Input
-              id="mercadolivre_link"
-              {...register('mercadolivre_link')}
-              placeholder="https://produto.mercadolivre.com.br/..."
-            />
-            {errors.mercadolivre_link && (
-              <p className="text-sm text-destructive">{errors.mercadolivre_link.message}</p>
-            )}
-          </div>
-
-          <div className="space-y-2">
-            <Label htmlFor="amazon_link" className="flex items-center gap-2">
-              <span className="w-5 h-5 rounded-full bg-amazon flex items-center justify-center">
-                <span className="text-amazon-foreground text-xs font-bold">A</span>
-              </span>
-              Link da Amazon
-            </Label>
-            <Input
-              id="amazon_link"
-              {...register('amazon_link')}
-              placeholder="https://www.amazon.com.br/dp/..."
-            />
-            {errors.amazon_link && (
-              <p className="text-sm text-destructive">{errors.amazon_link.message}</p>
-            )}
-          </div>
+          <h2 className="font-semibold">Links de Afiliado</h2>
+          <Input {...register('shopee_link')} placeholder="Link Shopee" />
+          <Input type="number" step="0.01" {...register('shopee_price')} placeholder="Preço Shopee" />
+          <Input {...register('mercadolivre_link')} placeholder="Link Mercado Livre" />
+          <Input type="number" step="0.01" {...register('mercadolivre_price')} placeholder="Preço Mercado Livre" />
+          <Input {...register('amazon_link')} placeholder="Link Amazon" />
+          <Input type="number" step="0.01" {...register('amazon_price')} placeholder="Preço Amazon" />
         </div>
-      </div>
 
-      {/* Submit */}
-      <Button type="submit" size="lg" className="w-full" disabled={isSubmitting}>
-        {isSubmitting ? (
-          <>
-            <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-            Salvando...
-          </>
-        ) : product ? (
-          'Atualizar Produto'
-        ) : (
-          'Criar Produto'
-        )}
-      </Button>
-    </form>
-  );
+        <Button type="submit" className="w-full" disabled={isSubmitting}>
+          {isSubmitting ? <Loader2 className="animate-spin" /> : product ? 'Atualizar Produto' : 'Criar Produto'}
+        </Button>
+      </form>
+
+      <BrandFormModal
+        open={brandModalOpen}
+        onOpenChange={setBrandModalOpen}
+        category={category}
+        onCreated={(newBrand) => {
+          setValue("brand_slug", newBrand.slug)
+          refetch()
+        }}
+      />
+    </>
+  )
 }

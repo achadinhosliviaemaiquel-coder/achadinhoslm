@@ -1,14 +1,10 @@
-User-agent: Googlebot
-Allow: /
-
-User-agent: Bingbot
-Allow: /
-
-User-agent: Twitterbot
-Allow: /
-
-User-agent: facebookexternalhit
-Allow: /
-
 User-agent: *
 Allow: /
+
+# Bloquear áreas que não devem indexar
+Disallow: /admin
+Disallow: /login
+Disallow: /dashboard
+Disallow: /api
+
+Sitemap: https://achadinhoslm.com.br/sitemap.xml

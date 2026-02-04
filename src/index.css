@@ -4,11 +4,12 @@
 @tailwind components;
 @tailwind utilities;
 
-/* Achados & Ofertas - Feminine-neutral social commerce design system */
+/* ================================
+   DESIGN SYSTEM
+================================ */
 
 @layer base {
   :root {
-    /* Core palette - soft pink to warm gray */
     --background: 340 30% 99%;
     --foreground: 340 25% 15%;
 
@@ -18,19 +19,15 @@
     --popover: 0 0% 100%;
     --popover-foreground: 340 25% 15%;
 
-    /* Primary - soft rose */
     --primary: 340 70% 55%;
     --primary-foreground: 0 0% 100%;
 
-    /* Secondary - warm blush */
     --secondary: 340 30% 95%;
     --secondary-foreground: 340 25% 25%;
 
-    /* Muted - soft gray with warmth */
     --muted: 340 15% 94%;
     --muted-foreground: 340 10% 45%;
 
-    /* Accent - peachy coral */
     --accent: 15 80% 94%;
     --accent-foreground: 15 60% 35%;
 
@@ -43,7 +40,6 @@
 
     --radius: 1rem;
 
-    /* Store brand colors */
     --shopee: 14 95% 55%;
     --shopee-foreground: 0 0% 100%;
     --mercadolivre: 48 100% 50%;
@@ -51,12 +47,10 @@
     --amazon: 28 100% 50%;
     --amazon-foreground: 0 0% 100%;
 
-    /* Gradients */
     --gradient-hero: linear-gradient(135deg, hsl(340 50% 97%) 0%, hsl(15 40% 96%) 100%);
     --gradient-card: linear-gradient(180deg, hsl(0 0% 100%) 0%, hsl(340 30% 98%) 100%);
     --gradient-cta: linear-gradient(135deg, hsl(340 70% 55%) 0%, hsl(340 80% 45%) 100%);
 
-    /* Shadows */
     --shadow-soft: 0 4px 20px -4px hsl(340 30% 20% / 0.08);
     --shadow-card: 0 8px 30px -8px hsl(340 30% 20% / 0.12);
     --shadow-button: 0 4px 14px -2px hsl(340 70% 55% / 0.35);
@@ -70,11 +64,9 @@
     --sidebar-border: 340 20% 90%;
     --sidebar-ring: 340 70% 55%;
   }
-}
 
-@layer base {
   * {
-    @apply border-border;
+    border-color: hsl(var(--border));
   }
 
   html {
@@ -89,66 +81,39 @@
   }
 }
 
+/* ================================
+   UTILITIES CUSTOM
+================================ */
+
 @layer utilities {
-  .gradient-hero {
-    background: var(--gradient-hero);
-  }
+  .gradient-hero { background: var(--gradient-hero); }
+  .gradient-card { background: var(--gradient-card); }
+  .gradient-cta { background: var(--gradient-cta); }
 
-  .gradient-card {
-    background: var(--gradient-card);
-  }
+  .shadow-soft { box-shadow: var(--shadow-soft); }
+  .shadow-card { box-shadow: var(--shadow-card); }
+  .shadow-button { box-shadow: var(--shadow-button); }
 
-  .gradient-cta {
-    background: var(--gradient-cta);
-  }
+  .animate-fade-in { animation: fadeIn 0.4s ease-out forwards; }
+  .animate-slide-up { animation: slideUp 0.5s ease-out forwards; }
+  .animate-bounce-subtle { animation: bounceSubtle 2s ease-in-out infinite; }
 
-  .shadow-soft {
-    box-shadow: var(--shadow-soft);
-  }
-
-  .shadow-card {
-    box-shadow: var(--shadow-card);
-  }
-
-  .shadow-button {
-    box-shadow: var(--shadow-button);
-  }
-
-  .animate-fade-in {
-    animation: fadeIn 0.4s ease-out forwards;
-  }
-
-  .animate-slide-up {
-    animation: slideUp 0.5s ease-out forwards;
-  }
-
-  .animate-bounce-subtle {
-    animation: bounceSubtle 2s ease-in-out infinite;
-  }
-
-  @keyframes fadeIn {
-    from { opacity: 0; }
-    to { opacity: 1; }
-  }
-
-  @keyframes slideUp {
-    from { 
-      opacity: 0; 
-      transform: translateY(20px); 
-    }
-    to { 
-      opacity: 1; 
-      transform: translateY(0); 
-    }
-  }
-
-  @keyframes bounceSubtle {
-    0%, 100% { transform: translateY(0); }
-    50% { transform: translateY(-4px); }
-  }
-
-  /* Mobile-first tap targets */
+  /* ✅ MOBILE-FIRST TAP TARGETS */
   .tap-target {
-    @apply min-h-[48px] min-w-[48px];
+    min-height: 48px;
+    min-width: 48px;
   }
+
+  /* ✅ REMOVE SCROLLBAR VISUAL (CAROUSEL PROFISSIONAL) */
+  .no-scrollbar::-webkit-scrollbar {
+    display: none;
+  }
+  .no-scrollbar {
+    -ms-overflow-style: none;
+    scrollbar-width: none;
+  }
+
+  @keyframes fadeIn { from { opacity: 0 } to { opacity: 1 } }
+  @keyframes slideUp { from { opacity: 0; transform: translateY(20px); } to { opacity: 1; transform: translateY(0); } }
+  @keyframes bounceSubtle { 0%,100%{transform:translateY(0)} 50%{transform:translateY(-4px)} }
 }

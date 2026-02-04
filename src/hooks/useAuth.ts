@@ -1,6 +1,7 @@
-import { useState, useEffect } from 'react';
-import { supabase } from '@/integrations/supabase/client';
-import type { User, Session } from '@supabase/supabase-js';
+import { useState, useEffect, useRef } from "react";
+import { supabase } from "@/integrations/supabase/client";
+import { initAuthListener } from "@/lib/authListener";
+import type { User, Session } from "@supabase/supabase-js";
 
 export function useAuth() {
   const [user, setUser] = useState<User | null>(null);
@@ -8,62 +9,73 @@ export function useAuth() {
   const [loading, setLoading] = useState(true);
   const [isAdmin, setIsAdmin] = useState(false);
 
-  useEffect(() => {
-    // Set up auth state listener BEFORE checking session
-    const { data: { subscription } } = supabase.auth.onAuthStateChange(
-      async (event, session) => {
-        setSession(session);
-        setUser(session?.user ?? null);
-        
-        if (session?.user) {
-          // Check admin role
-          const { data } = await supabase
-            .from('user_roles')
-            .select('role')
-            .eq('user_id', session.user.id)
-            .eq('role', 'admin')
-            .single();
-          
-          setIsAdmin(!!data);
-        } else {
-          setIsAdmin(false);
-        }
-        
-        setLoading(false);
-      }
-    );
+  const listenerInitialized = useRef(false);
 
-    // Check initial session
-    supabase.auth.getSession().then(({ data: { session } }) => {
-      setSession(session);
-      setUser(session?.user ?? null);
-      
-      if (session?.user) {
-        supabase
-          .from('user_roles')
-          .select('role')
-          .eq('user_id', session.user.id)
-          .eq('role', 'admin')
-          .single()
-          .then(({ data }) => {
-            setIsAdmin(!!data);
-            setLoading(false);
-          });
+  const checkAdminRole = async (userId: string) => {
+    try {
+      console.log("RPC CALL START");
+
+      const { data, error } = await supabase.rpc("has_role", {
+        _user_id: userId,
+        _role: "admin",
+      });
+
+      console.log("RPC RESULT:", data, error);
+
+      if (error) {
+        setIsAdmin(false);
       } else {
-        setLoading(false);
+        setIsAdmin((prev) => (prev === !!data ? prev : !!data));
+      }
+    } catch {
+      setIsAdmin(false);
+    }
+  };
+
+  useEffect(() => {
+    if (listenerInitialized.current) return;
+    listenerInitialized.current = true;
+
+    console.log("AUTH INIT");
+
+    const init = async () => {
+      const { data } = await supabase.auth.getSession();
+      const currentSession = data.session;
+
+      setSession(currentSession);
+      setUser(currentSession?.user ?? null);
+
+      // 🔥 verifica role ANTES de liberar loading
+      if (currentSession?.user) {
+        await checkAdminRole(currentSession.user.id);
+      }
+
+      setLoading(false);
+    };
+
+    init();
+
+    initAuthListener(async (newSession) => {
+      console.log("AUTH STATE CHANGED");
+
+      setSession((prev) =>
+        prev?.access_token === newSession?.access_token ? prev : newSession
+      );
+
+      setUser((prev) =>
+        prev?.id === newSession?.user?.id ? prev : newSession?.user ?? null
+      );
+
+      if (newSession?.user) {
+        await checkAdminRole(newSession.user.id);
+      } else {
+        setIsAdmin(false);
       }
     });
-
-    return () => {
-      subscription.unsubscribe();
-    };
   }, []);
 
   const signIn = async (email: string, password: string) => {
-    const { error } = await supabase.auth.signInWithPassword({
-      email,
-      password,
-    });
+    const { error } = await supabase.auth.signInWithPassword({ email, password });
     return { error };
   };
 
@@ -71,9 +83,7 @@ export function useAuth() {
     const { error } = await supabase.auth.signUp({
       email,
       password,
-      options: {
-        emailRedirectTo: window.location.origin,
-      },
+      options: { emailRedirectTo: window.location.origin },
     });
     return { error };
   };
@@ -83,13 +93,5 @@ export function useAuth() {
     return { error };
   };
 
-  return {
-    user,
-    session,
-    loading,
-    isAdmin,
-    signIn,
-    signUp,
-    signOut,
-  };
+  return { user, session, loading, isAdmin, signIn, signUp, signOut };
 }

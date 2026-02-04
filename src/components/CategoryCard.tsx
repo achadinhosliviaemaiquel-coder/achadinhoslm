@@ -32,18 +32,50 @@ export function CategoryCard({ category }: CategoryCardProps) {
   const Icon = ICONS[category];
 
   return (
-    <Link to={`/category/${category}`} className="group block animate-fade-in">
-      <div className="bg-white rounded-2xl p-5 shadow-md border border-gray-100 transition-all duration-300 hover:shadow-lg hover:-translate-y-1 hover:border-gray-200 text-center">
+    <Link
+      to={`/category/${category}`}
+      className="group block animate-fade-in"
+    >
+      <div className="
+        bg-white
+        rounded-2xl
+        px-3 py-4                 /* ↓ menos padding horizontal */
+        shadow-sm
+        border border-gray-100
+        transition-all duration-300
+        hover:shadow-md
+        hover:-translate-y-0.5
+        active:scale-[0.98]       /* feedback toque mobile */
+        text-center
+        h-[115px]                 /* altura consistente */
+        flex flex-col
+        items-center
+        justify-center
+      ">
 
         {/* Ícone */}
-        <div className="mb-3 flex items-center justify-center">
-          <div className="w-14 h-14 rounded-xl bg-gray-100 flex items-center justify-center">
-            <Icon size={26} strokeWidth={1.8} />
+        <div className="mb-2 flex items-center justify-center">
+          <div className="
+            w-11 h-11              /* ↓ menor que antes */
+            rounded-xl
+            bg-gray-100
+            flex items-center justify-center
+            group-hover:bg-gray-200
+            transition-colors
+          ">
+            <Icon size={22} strokeWidth={1.8} />
           </div>
         </div>
 
-        {/* Nome da categoria */}
-        <h3 className="font-semibold text-sm text-gray-800 leading-tight h-10 flex items-center justify-center px-1 text-center">
+        {/* Nome */}
+        <h3 className="
+          font-semibold
+          text-[13px]              /* ↓ melhor para 3 colunas */
+          text-gray-800
+          leading-tight
+          text-center
+          line-clamp-2
+        ">
           {CATEGORY_LABELS[category]}
         </h3>
 

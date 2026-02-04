@@ -71,3 +71,59 @@ Yes, you can!
 To connect a domain, navigate to Project > Settings > Domains and click Connect Domain.
 
 Read more here: [Setting up a custom domain](https://docs.lovable.dev/features/custom-domain#custom-domain)
+
+casa - 
+cama
+banho
+cozinha
+limpeza
+organizacao
+
+moda - 
+vestidos
+acessorios
+roupas-intimas
+fitness
+
+infantil - 
+brinquedos
+roupas
+calcados
+
+pets - 
+brinquedos
+remedios
+racao
+armazenamento
+higiene
+
+escritório - 
+papelaria
+organizacao
+mochilas
+
+eletronicos - 
+seguranca
+automotivo
+audio
+imagem
+
+eletrodomésticos -
+cozinha
+limpeza
+cafe
+
+suplementos -
+creatina
+whey
+pretreino
+
+beleza -
+locao
+protetor-solar
+protetor-facial
+shampoo
+kit
+creme
+hidratante
+

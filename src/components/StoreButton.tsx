@@ -2,12 +2,16 @@ import { Link } from 'react-router-dom';
 import { Button } from '@/components/ui/button';
 import { ExternalLink } from 'lucide-react';
 import { cn } from '@/lib/utils';
+import { getCommissionRate } from '@/lib/affiliateRates';
 
 interface StoreButtonProps {
   store: 'shopee' | 'mercadolivre' | 'amazon';
   productSlug: string;
+  price: number;
+  category: string;
   className?: string;
 }
+
 
 const STORE_CONFIG = {
   shopee: {
@@ -29,7 +33,24 @@ const STORE_CONFIG = {
 
 export function StoreButton({ store, productSlug, className }: StoreButtonProps) {
   const config = STORE_CONFIG[store];
-  
+
+  const handleClick = () => {
+    if (window.gtag) {
+      const rate = getCommissionRate(store, category);
+      const estimatedCommission = price * rate;
+
+      window.gtag('event', 'affiliate_click', {
+        store,
+        product_slug: productSlug,
+        category,
+        price,
+        commission_rate: rate,
+        estimated_commission: estimatedCommission,
+        page_path: window.location.pathname,
+      });
+    }
+  };
+
   return (
     <Button
       asChild
@@ -41,7 +62,10 @@ export function StoreButton({ store, productSlug, className }: StoreButtonProps)
         className
       )}
     >
-      <Link to={`/go/${store}/${productSlug}`}>
+      <Link
+        to={`/go/${store}/${productSlug}`}
+        onClick={handleClick}
+      >
         {config.label}
         <ExternalLink className="ml-2 h-4 w-4" />
       </Link>

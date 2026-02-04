@@ -1,16 +1,26 @@
-import { useState } from 'react';
-import { Navigate, Link } from 'react-router-dom';
-import { Layout } from '@/components/Layout';
-import { ProductForm } from '@/components/admin/ProductForm';
-import { ProductList } from '@/components/admin/ProductList';
-import { Button } from '@/components/ui/button';
-import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import { useAuth } from '@/hooks/useAuth';
-import { Loader2, LogOut, Plus, List } from 'lucide-react';
+import { useState } from "react";
+import { Navigate, Link } from "react-router-dom";
+import { Layout } from "@/components/Layout";
+import { ProductForm } from "@/components/admin/ProductForm";
+import { ProductList } from "@/components/admin/ProductList";
+import { Button } from "@/components/ui/button";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { useAuth } from "@/hooks/useAuth";
+import { Loader2, LogOut, Plus, List, BarChart3, Rocket, Database, Globe } from "lucide-react";
+import { CATEGORY_LABELS, type ProductCategory } from "@/types/product";
 
 export default function AdminPage() {
   const { user, isAdmin, loading, signOut } = useAuth();
-  const [activeTab, setActiveTab] = useState('list');
+
+  const [activeTab, setActiveTab] = useState("list");
+  const [activeCategory, setActiveCategory] = useState<ProductCategory | "all">("all");
+  const [page, setPage] = useState(1); // ⭐ PAGINAÇÃO
+
+  // Resetar página ao trocar categoria
+  const handleCategoryChange = (category: ProductCategory | "all") => {
+    setActiveCategory(category);
+    setPage(1);
+  };
 
   if (loading) {
     return (
@@ -20,21 +30,15 @@ export default function AdminPage() {
     );
   }
 
-  if (!user) {
-    return <Navigate to="/login" replace />;
-  }
+  if (!user) return <Navigate to="/login" replace />;
 
   if (!isAdmin) {
     return (
       <div className="min-h-screen flex items-center justify-center bg-background p-4">
         <div className="text-center space-y-4">
           <span className="text-4xl">🚫</span>
-          <h1 className="text-xl font-semibold text-foreground">
-            Acesso Restrito
-          </h1>
-          <p className="text-muted-foreground">
-            Você não tem permissão para acessar esta área.
-          </p>
+          <h1 className="text-xl font-semibold text-foreground">Acesso Restrito</h1>
+          <p className="text-muted-foreground">Você não tem permissão para acessar esta área.</p>
           <div className="flex gap-2 justify-center">
             <Button asChild variant="outline">
               <Link to="/">Voltar ao site</Link>
@@ -51,16 +55,13 @@ export default function AdminPage() {
 
   return (
     <Layout showFooter={false}>
-      <div className="space-y-6">
-        {/* Header */}
+      <div className="space-y-8">
+
+        {/* HEADER */}
         <div className="flex items-center justify-between">
           <div>
-            <h1 className="text-xl font-bold text-foreground">
-              Painel Admin
-            </h1>
-            <p className="text-sm text-muted-foreground">
-              Gerencie seus produtos
-            </p>
+            <h1 className="text-xl font-bold text-foreground">Painel Admin</h1>
+            <p className="text-sm text-muted-foreground">Gerencie seus produtos</p>
           </div>
           <Button onClick={signOut} variant="ghost" size="sm">
             <LogOut className="h-4 w-4 mr-2" />
@@ -68,25 +69,74 @@ export default function AdminPage() {
           </Button>
         </div>
 
-        {/* Tabs */}
+        {/* ATALHOS */}
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+          <Button asChild variant="secondary" className="justify-start gap-2">
+            <a href="https://analytics.google.com" target="_blank">
+              <BarChart3 className="h-4 w-4" /> Analytics
+            </a>
+          </Button>
+          <Button asChild variant="secondary" className="justify-start gap-2">
+            <a href="https://app.netlify.com" target="_blank">
+              <Rocket className="h-4 w-4" /> Netlify
+            </a>
+          </Button>
+          <Button asChild variant="secondary" className="justify-start gap-2">
+            <a href="https://supabase.com/dashboard" target="_blank">
+              <Database className="h-4 w-4" /> Supabase
+            </a>
+          </Button>
+          <Button asChild variant="secondary" className="justify-start gap-2">
+            <a href="/" target="_blank">
+              <Globe className="h-4 w-4" /> Ver Site
+            </a>
+          </Button>
+        </div>
+
         <Tabs value={activeTab} onValueChange={setActiveTab}>
           <TabsList className="grid w-full grid-cols-2">
             <TabsTrigger value="list" className="flex items-center gap-2">
-              <List className="h-4 w-4" />
-              Produtos
+              <List className="h-4 w-4" /> Produtos
             </TabsTrigger>
             <TabsTrigger value="add" className="flex items-center gap-2">
-              <Plus className="h-4 w-4" />
-              Adicionar
+              <Plus className="h-4 w-4" /> Adicionar
             </TabsTrigger>
           </TabsList>
 
-          <TabsContent value="list" className="mt-6">
-            <ProductList />
+          <TabsContent value="list" className="mt-6 space-y-6">
+
+            {/* FILTRO */}
+            <div className="flex flex-wrap gap-2">
+              <Button
+                size="sm"
+                variant={activeCategory === "all" ? "default" : "outline"}
+                onClick={() => handleCategoryChange("all")}
+              >
+                Todos
+              </Button>
+
+              {Object.entries(CATEGORY_LABELS).map(([key, label]) => (
+                <Button
+                  key={key}
+                  size="sm"
+                  variant={activeCategory === key ? "default" : "outline"}
+                  onClick={() => handleCategoryChange(key as ProductCategory)}
+                >
+                  {label}
+                </Button>
+              ))}
+            </div>
+
+            {/* LISTA COM PAGINAÇÃO */}
+            <ProductList
+              categoryFilter={activeCategory}
+              page={page}
+              setPage={setPage}
+            />
           </TabsContent>
 
           <TabsContent value="add" className="mt-6">
-            <ProductForm onSuccess={() => setActiveTab('list')} />
+            <ProductForm onSuccess={() => setActiveTab("list")} />
           </TabsContent>
         </Tabs>
       </div>
