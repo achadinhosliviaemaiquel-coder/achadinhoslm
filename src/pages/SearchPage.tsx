@@ -7,6 +7,8 @@ import { ProductCard } from "@/components/ProductCard";
 import type { Product } from "@/types/product";
 
 export default function SearchPage() {
+  const supabase = getSupabase(); // ✅ CORREÇÃO AQUI
+
   const [params] = useSearchParams();
   const query = params.get("q") || "";
 

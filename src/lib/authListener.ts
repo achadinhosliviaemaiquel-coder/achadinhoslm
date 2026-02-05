@@ -12,6 +12,8 @@ export function initAuthListener(cb: Callback) {
   if (initialized) return;
   initialized = true;
 
+  const supabase = getSupabase();
+
   supabase.auth.onAuthStateChange((_event, session) => {
     callback?.(session);
   });

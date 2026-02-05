@@ -16,6 +16,8 @@ export function useBrandsAdmin() {
   return useQuery({
     queryKey: ["admin-brands"],
     queryFn: async () => {
+      const supabase = getSupabase()
+
       const { data, error } = await supabase
         .from("brands")
         .select("*")
@@ -34,6 +36,8 @@ export function useCreateBrand() {
 
   return useMutation({
     mutationFn: async (brand: Omit<Brand, "id" | "created_at">) => {
+      const supabase = getSupabase()
+
       const { data, error } = await supabase
         .from("brands")
         .insert(brand)
@@ -54,6 +58,8 @@ export function useUpdateBrand() {
 
   return useMutation({
     mutationFn: async ({ id, ...updates }: Partial<Brand> & { id: string }) => {
+      const supabase = getSupabase()
+
       const { data, error } = await supabase
         .from("brands")
         .update(updates)
@@ -75,6 +81,8 @@ export function useDeleteBrand() {
 
   return useMutation({
     mutationFn: async (id: string) => {
+      const supabase = getSupabase()
+
       const { error } = await supabase.from("brands").delete().eq("id", id)
       if (error) throw error
     },

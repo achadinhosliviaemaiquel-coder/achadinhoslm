@@ -29,6 +29,8 @@ function getReviewStyles(url: string) {
 }
 
 export default function ProductPage() {
+  const supabase = getSupabase() // ✅ CORREÇÃO AQUI
+
   const { slug } = useParams<{ slug: string }>()
   const navigate = useNavigate()
   const location = useLocation()
@@ -42,7 +44,7 @@ export default function ProductPage() {
   useEffect(() => {
     if (!product?.id) return
     supabase.rpc('increment_product_views', { product_id: product.id })
-  }, [product?.id])
+  }, [product?.id, supabase])
 
   useEffect(() => {
     if (product) trackProductView(product.slug, product.category)
@@ -101,7 +103,7 @@ export default function ProductPage() {
         <title>{product.name} | Menor preço e onde comprar</title>
         <meta name="description" content={product.description || product.name} />
       </Helmet>
-
+      
       <div className="space-y-6 animate-fade-in max-w-[820px] mx-auto">
 
         <Button variant="ghost" size="sm" onClick={handleBack} className="-ml-2">

@@ -4,6 +4,8 @@ import { initAuthListener } from "@/lib/authListener";
 import type { User, Session } from "@supabase/supabase-js";
 
 export function useAuth() {
+  const supabase = getSupabase();
+
   const [user, setUser] = useState<User | null>(null);
   const [session, setSession] = useState<Session | null>(null);
   const [loading, setLoading] = useState(true);
@@ -13,14 +15,10 @@ export function useAuth() {
 
   const checkAdminRole = async (userId: string) => {
     try {
-      console.log("RPC CALL START");
-
       const { data, error } = await supabase.rpc("has_role", {
         _user_id: userId,
         _role: "admin",
       });
-
-      console.log("RPC RESULT:", data, error);
 
       if (error) {
         setIsAdmin(false);
@@ -36,8 +34,6 @@ export function useAuth() {
     if (listenerInitialized.current) return;
     listenerInitialized.current = true;
 
-    console.log("AUTH INIT");
-
     const init = async () => {
       const { data } = await supabase.auth.getSession();
       const currentSession = data.session;
@@ -45,7 +41,6 @@ export function useAuth() {
       setSession(currentSession);
       setUser(currentSession?.user ?? null);
 
-      // 🔥 verifica role ANTES de liberar loading
       if (currentSession?.user) {
         await checkAdminRole(currentSession.user.id);
       }
@@ -56,8 +51,6 @@ export function useAuth() {
     init();
 
     initAuthListener(async (newSession) => {
-      console.log("AUTH STATE CHANGED");
-
       setSession((prev) =>
         prev?.access_token === newSession?.access_token ? prev : newSession
       );
