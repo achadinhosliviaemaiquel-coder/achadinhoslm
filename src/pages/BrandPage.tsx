@@ -11,34 +11,34 @@ export default function BrandPage() {
   const { brandSlug } = useParams<{ brandSlug: string }>()
   const navigate = useNavigate()
 
-  const { data: products, isLoading } = useQuery({
+  const { data: products = [], isLoading } = useQuery({
     queryKey: ["brand-products", brandSlug],
+    enabled: !!brandSlug,
     queryFn: async () => {
+      const supabase = getSupabase()
+
       const { data, error } = await supabase
         .from("products")
         .select("*")
         .eq("brand_slug", brandSlug)
         .eq("is_active", true)
+        .order("created_at", { ascending: false })
 
       if (error) throw error
-      return data
+      return data ?? []
     },
   })
 
-  const brandName = brandSlug
-    ? brandSlug.replace(/-/g, " ")
-    : "Marca"
+  const brandName = brandSlug ? brandSlug.replace(/-/g, " ") : "Marca"
 
   return (
     <Layout
       breadcrumb={[
         { name: "Home", url: "/" },
-        { name: "Marcas", url: "/brands" },
         { name: brandName, url: `/brand/${brandSlug}` },
       ]}
     >
       <div className="space-y-6">
-
         <Button
           variant="ghost"
           size="sm"
@@ -49,9 +49,7 @@ export default function BrandPage() {
           Voltar
         </Button>
 
-        <h1 className="text-xl font-bold capitalize">
-          {brandName}
-        </h1>
+        <h1 className="text-xl font-bold capitalize">{brandName}</h1>
 
         {isLoading ? (
           <div className="flex justify-center">
@@ -64,7 +62,7 @@ export default function BrandPage() {
         ) : (
           <div className="flex justify-center">
             <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-5 max-w-[1100px] w-full">
-              {products?.map((product) => (
+              {products.map((product) => (
                 <ProductCard key={product.id} product={product} />
               ))}
             </div>

@@ -24,37 +24,35 @@ export function useProducts(
       const from = (page - 1) * PAGE_SIZE;
       const to = from + PAGE_SIZE - 1;
 
+      console.log("categorySlug recebido:", categorySlug);
+
       let query = supabase
         .from("products")
         .select(
           `
-          id,
-          name,
-          slug,
-          description,
-          benefits,
-          image_urls,
-          subcategory,
-          brand_slug,
-          views_count,
-          created_at,
-          shopee_price,
-          amazon_price,
-          mercadolivre_price,
-          shopee_link,
-          amazon_link,
-          mercadolivre_link,
-          price_label,
-          urgency_label,
-          review_url,
-          is_active,
-          categories:categories!products_category_id_fkey (
-            id,
-            slug,
-            name
-          )
-          `,
-          { count: "exact" }
+      id,
+      name,
+      slug,
+      description,
+      benefits,
+      image_urls,
+      category,
+      subcategory,
+      brand_slug,
+      views_count,
+      created_at,
+      shopee_price,
+      amazon_price,
+      mercadolivre_price,
+      shopee_link,
+      amazon_link,
+      mercadolivre_link,
+      price_label,
+      urgency_label,
+      review_url,
+      is_active
+      `,
+          { count: "exact" },
         )
         .eq("is_active", true);
 
@@ -94,7 +92,6 @@ export function useProducts(
         totalPages: Math.ceil((count || 0) / PAGE_SIZE),
       };
     },
-
     keepPreviousData: true,
     staleTime: 1000 * 60 * 5,
   });
@@ -112,16 +109,7 @@ export function useProduct(slug: string) {
 
       const { data, error } = await supabase
         .from("products")
-        .select(
-          `
-          *,
-          categories!inner (
-            id,
-            slug,
-            name
-          )
-          `
-        )
+        .select("*")
         .eq("slug", slug)
         .single();
 
@@ -248,25 +236,21 @@ export function useSearchProducts(query: string, page: number = 1) {
     queryFn: async () => {
       const supabase = getSupabase();
 
+      console.log("useSearchProducts running. query:", query, "page:", page);
+
       const { data, error, count } = await supabase
         .from("products")
-        .select(
-          `
-          *,
-          categories!inner (
-            id,
-            slug,
-            name
-          )
-          `,
-          { count: "exact" }
-        )
+        .select("*", { count: "exact" })
         .eq("is_active", true)
         .or(
-          `name.ilike.%${query}%,description.ilike.%${query}%,subcategory.ilike.%${query}%`
+          `name.ilike.%${query}%,description.ilike.%${query}%,subcategory.ilike.%${query}%`,
         )
         .order("created_at", { ascending: false })
         .range((page - 1) * PAGE_SIZE, page * PAGE_SIZE - 1);
+
+      console.log("useSearchProducts error:", error);
+      console.log("useSearchProducts count:", count);
+      console.log("useSearchProducts data length:", data?.length);
 
       if (error) throw error;
 

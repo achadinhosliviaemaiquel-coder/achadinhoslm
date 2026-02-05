@@ -111,18 +111,23 @@ export default function Index() {
             </div>
           ) : products && products.length > 0 ? (
             <Carousel opts={{ align: "start", dragFree: true }} className="w-full">
-              <CarouselContent className="ml-4">
+              <CarouselContent className="-ml-3">
                 {products.map((product) => (
-                  <CarouselItem key={product.id} className="min-w-[170px] sm:min-w-[190px] md:min-w-[210px] lg:min-w-[230px] xl:min-w-[240px] basis-auto">
+                  <CarouselItem
+                    key={product.id}
+                    className="pl-3 !basis-[170px] sm:!basis-[190px] md:!basis-[210px] lg:!basis-[230px] xl:!basis-[240px] !shrink-0"
+                  >
                     <ProductCard product={product} />
                   </CarouselItem>
                 ))}
               </CarouselContent>
+
               <div className="hidden md:block">
                 <CarouselPrevious />
                 <CarouselNext />
               </div>
             </Carousel>
+
           ) : (
             <div className="text-center py-12 space-y-4">
               <span className="text-4xl">📦</span>

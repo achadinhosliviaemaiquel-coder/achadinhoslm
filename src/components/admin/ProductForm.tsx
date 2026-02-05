@@ -113,8 +113,8 @@ export function ProductForm({ product, onSuccess }: Props) {
     defaultValues: {
       name: "",
       slug: "",
-      category: "",       // 🔴 ESSENCIAL
-      brand_slug: "",     // 🔴 ESSENCIAL
+      category: "",
+      brand_slug: "generico",
       subcategory: "",
       description: "",
       benefits: "",
@@ -123,16 +123,14 @@ export function ProductForm({ product, onSuccess }: Props) {
     },
   })
 
-  /* ================= POPULAR FORM ================= */
-
   useEffect(() => {
     if (!product) return
 
     reset({
       name: product.name ?? "",
       slug: product.slug ?? "",
-      category: product.categories?.slug ?? "",   // 🔥 AQUI ESTÁ A CORREÇÃO
-      brand_slug: product.brand_slug ?? "",
+      category: (product as any).category ?? "",
+      brand_slug: product.brand_slug ?? "generico",
       description: product.description ?? "",
       benefits: product.benefits?.join('\n') ?? "",
       image_urls: product.image_urls?.join('\n') ?? "",
@@ -149,7 +147,7 @@ export function ProductForm({ product, onSuccess }: Props) {
 
   const category = watch('category') || ""
   const name = watch('name')
-  const { data: brands, refetch } = useBrands(category, "admin")
+  const { data: brands, refetch } = useBrands(category)
 
   const normalize = (text: string) =>
     text.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "")
@@ -160,8 +158,6 @@ export function ProductForm({ product, onSuccess }: Props) {
       setValue('slug', slug)
     }
   }
-
-  /* ================= SUBMIT ================= */
 
   const onSubmit = async (data: ProductFormData) => {
     setIsSubmitting(true)
@@ -187,8 +183,6 @@ export function ProductForm({ product, onSuccess }: Props) {
     }
   }
 
-  /* ================= RESET SUBCATEGORIA ================= */
-
   const previousCategoryRef = useRef<string | undefined>()
   useEffect(() => {
     if (!previousCategoryRef.current) {
@@ -200,8 +194,6 @@ export function ProductForm({ product, onSuccess }: Props) {
     }
     previousCategoryRef.current = category
   }, [category, setValue])
-
-  /* ================= AUTODETECT SUBCATEGORIA ================= */
 
   useEffect(() => {
     if (!name || !category || !SUBCATEGORY_OPTIONS[category]) return
@@ -218,7 +210,6 @@ export function ProductForm({ product, onSuccess }: Props) {
         <Input {...register('name')} onChange={(e) => { register('name').onChange(e); handleNameChange(e.target.value) }} placeholder="Nome do Produto" />
         <Input {...register('slug')} placeholder="Slug" />
 
-        {/* ✅ CATEGORIA AGORA REGISTRADA */}
         <Controller
           name="category"
           control={control}
@@ -236,17 +227,29 @@ export function ProductForm({ product, onSuccess }: Props) {
 
         <Label>Marca</Label>
 
-        {/* ✅ MARCA AGORA REGISTRADA */}
         <Controller
           name="brand_slug"
           control={control}
           render={({ field }) => (
-            <Select value={field.value || ""} onValueChange={field.onChange}>
+            <Select value={field.value || "generico"} onValueChange={field.onChange}>
               <SelectTrigger><SelectValue placeholder="Marca" /></SelectTrigger>
               <SelectContent>
-                {brands?.map((b) => <SelectItem key={b.slug} value={b.slug}>{b.name}</SelectItem>)}
+                <SelectItem value="generico">Genérico</SelectItem>
+
+                {brands
+                  ?.filter((b) => b.slug !== "generico")
+                  .map((b) => (
+                    <SelectItem key={b.slug} value={b.slug}>
+                      {b.name}
+                    </SelectItem>
+                  ))}
+
                 <div className="border-t mt-2 pt-2">
-                  <button type="button" onClick={() => setBrandModalOpen(true)} className="text-sm text-primary hover:underline px-2 py-1">
+                  <button
+                    type="button"
+                    onClick={() => setBrandModalOpen(true)}
+                    className="text-sm text-primary hover:underline px-2 py-1"
+                  >
                     + Criar nova marca
                   </button>
                 </div>

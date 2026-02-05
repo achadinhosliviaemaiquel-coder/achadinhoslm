@@ -37,9 +37,9 @@ const App = () => {
           <Routes>
             <Route path="/" element={<Index />} />
             <Route path="/product/:slug" element={<ProductPage />} />
+            <Route path="/brand/:brandSlug" element={<BrandPage />} />
             <Route path="/:category/marca/:brandSlug" element={<BrandPage />} />
             <Route path="/category/:category" element={<CategoryPage />} />
-            <Route path="/category/:category/:subcategory" element={<CategoryPage />} />
             <Route path="/go/:store/:slug" element={<BridgePage />} />
             <Route path="/search" element={<SearchPage />} />
             <Route path="/login" element={<LoginPage />} />

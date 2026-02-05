@@ -64,6 +64,8 @@ export function ProductList({ categoryFilter }: { categoryFilter: ProductCategor
     if (!bulkCategory || selectedIds.length === 0) return
     setIsBulkUpdating(true)
 
+    const supabase = getSupabase()
+
     const { error } = await supabase
       .from("products")
       .update({
@@ -196,7 +198,6 @@ export function ProductList({ categoryFilter }: { categoryFilter: ProductCategor
       {/* PAGINAÇÃO */}
       {totalPages > 1 && (
         <div className="flex justify-center items-center gap-2 pt-6">
-
           <Button size="sm" variant="outline" disabled={page === 1} onClick={() => setPage((p) => p - 1)}>
             Anterior
           </Button>
@@ -233,7 +234,6 @@ export function ProductList({ categoryFilter }: { categoryFilter: ProductCategor
           <Button size="sm" variant="outline" disabled={page === totalPages} onClick={() => setPage((p) => p + 1)}>
             Próxima
           </Button>
-
         </div>
       )}
 

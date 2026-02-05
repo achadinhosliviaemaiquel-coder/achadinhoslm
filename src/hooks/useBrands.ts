@@ -1,56 +1,55 @@
-import { getSupabase } from "@/integrations/supabase/client"
-import { useQuery } from "@tanstack/react-query"
+import { useQuery } from "@tanstack/react-query";
+import { getSupabase } from "@/integrations/supabase/client";
 
-type Mode = "public" | "admin"
+export type BrandWithCount = {
+  slug: string;
+  name: string;
+  product_count: number;
+};
 
-export function useBrands(category: string, mode: Mode = "public") {
+export function useBrands(categorySlug: string) {
   return useQuery({
-    queryKey: ["brands", category, mode],
-    queryFn: async () => {
+    queryKey: ["brands", categorySlug],
+    enabled: !!categorySlug,
+    queryFn: async (): Promise<BrandWithCount[]> => {
+      const supabase = getSupabase();
 
-      // 🔹 ADMIN MODE → só lista marcas da categoria
-      if (mode === "admin") {
-        const { data, error } = await supabase
-          .from("brands")
-          .select("id, name, slug")
-          .eq("category", category)
-          .order("name")
-
-        if (error) throw error
-        return data
-      }
-
-      // 🔹 PUBLIC MODE (o que você já usava)
-      const { data: brands, error: brandError } = await supabase
-        .from("brands")
-        .select("id, name, slug, logo_url")
-        .eq("category", category)
-        .eq("is_featured", true)
-
-      if (brandError) throw brandError
-      if (!brands?.length) return []
-
-      const { data: counts, error: countError } = await supabase
+      const { data: products, error: productsError } = await supabase
         .from("products")
         .select("brand_slug")
-        .in("brand_slug", brands.map(b => b.slug))
+        .eq("is_active", true)
+        .eq("category", categorySlug);
 
-      if (countError) throw countError
+      if (productsError) throw productsError;
 
-      const countMap: Record<string, number> = {}
+      const slugs = (products ?? [])
+        .map((p) => p.brand_slug)
+        .filter((s): s is string => typeof s === "string" && s.length > 0);
 
-      counts.forEach(p => {
-        if (!p.brand_slug) return
-        countMap[p.brand_slug] = (countMap[p.brand_slug] || 0) + 1
-      })
+      if (slugs.length === 0) return [];
 
-      return brands
-        .map(brand => ({
-          ...brand,
-          product_count: countMap[brand.slug] || 0
+      const counts = new Map<string, number>();
+      for (const s of slugs) counts.set(s, (counts.get(s) ?? 0) + 1);
+
+      const uniqueSlugs = Array.from(counts.keys());
+
+      const { data: brands, error: brandsError } = await supabase
+        .from("brands")
+        .select("slug, name")
+        .in("slug", uniqueSlugs);
+
+      if (brandsError) throw brandsError;
+
+      return (brands ?? [])
+        .map((b) => ({
+          slug: b.slug as string,
+          name: b.name as string,
+          product_count: counts.get(b.slug as string) ?? 0,
         }))
-        .filter(brand => brand.product_count > 0)
-        .sort((a, b) => b.product_count - a.product_count)
+        .filter((b) => b.product_count > 0)
+        .filter((b) => b.slug !== "generico" && !b.slug.startsWith("generica-"))
+        .sort((a, b) => b.product_count - a.product_count);
     },
-  })
+    staleTime: 1000 * 60 * 10,
+  });
 }
