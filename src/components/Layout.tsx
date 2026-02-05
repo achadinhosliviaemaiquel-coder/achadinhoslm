@@ -4,7 +4,7 @@ import { Instagram, Youtube } from "lucide-react";
 import { ScrollToTop } from "@/components/ScrollToTop";
 import { Helmet } from "react-helmet-async";
 import { useLocation } from "react-router-dom";
-import { useEffect } from "react";
+import { useEffect, useMemo } from "react";
 
 interface BreadcrumbItem {
   name: string;
@@ -17,11 +17,24 @@ interface LayoutProps {
   breadcrumb?: BreadcrumbItem[];
 }
 
+// ✅ evita crash caso algum dia rode em ambiente sem window (ou testes)
+function getBaseUrlSafe() {
+  try {
+    const host = window.location.hostname;
+    if (host.includes("vercel.app")) return "https://achadinhoslm.vercel.app";
+    return "https://achadinhoslm.com.br";
+  } catch {
+    // fallback (build/test)
+    return "https://achadinhoslm.com.br";
+  }
+}
+
 export function Layout({ children, showFooter = true, breadcrumb = [] }: LayoutProps) {
   const location = useLocation();
 
-  const BASE_URL = "https://achadinhoslm.com.br";
-  const canonicalUrl = `${BASE_URL}${location.pathname}`;
+  const BASE_URL = useMemo(() => getBaseUrlSafe(), []);
+  const fullPath = `${location.pathname}${location.search || ""}`; // ✅ inclui ?q=...
+  const canonicalUrl = `${BASE_URL}${fullPath}`;
 
   const breadcrumbSchema =
     breadcrumb.length > 0
@@ -61,13 +74,14 @@ export function Layout({ children, showFooter = true, breadcrumb = [] }: LayoutP
     ],
   };
 
+  // ⭐ GA4 — rastrear mudança de rota (inclui querystring)
   useEffect(() => {
     if (window.gtag) {
       window.gtag('config', 'G-L8J2YZRFFP', {
-        page_path: location.pathname,
+        page_path: fullPath,
       });
     }
-  }, [location]);
+  }, [fullPath]);
 
   return (
     <div className="min-h-screen flex flex-col bg-background">
@@ -87,6 +101,8 @@ export function Layout({ children, showFooter = true, breadcrumb = [] }: LayoutP
         <meta property="og:title" content="Achadinhos LM & Promoções" />
         <meta property="og:description" content="Ofertas da Shopee, Amazon e Mercado Livre todos os dias." />
         <meta property="og:image" content={`${BASE_URL}/og-home.jpg`} />
+        <meta property="og:image:width" content="1200" />
+        <meta property="og:image:height" content="630" />
 
         {/* ===== Twitter ===== */}
         <meta name="twitter:card" content="summary_large_image" />
@@ -129,17 +145,32 @@ export function Layout({ children, showFooter = true, breadcrumb = [] }: LayoutP
       </main>
 
       <div className="flex justify-center gap-6 py-6 text-muted-foreground">
-        <a href="https://www.instagram.com/achadosliviamaiquel/" target="_blank" rel="noopener noreferrer" className="hover:text-pink-500 transition-colors">
+        <a
+          href="https://www.instagram.com/achadosliviamaiquel/"
+          target="_blank"
+          rel="noopener noreferrer"
+          className="hover:text-pink-500 transition-colors"
+        >
           <Instagram size={22} />
         </a>
 
-        <a href="https://www.tiktok.com/@achadosliviamaiquel" target="_blank" rel="noopener noreferrer" className="hover:text-black transition-colors">
+        <a
+          href="https://www.tiktok.com/@achadosliviamaiquel"
+          target="_blank"
+          rel="noopener noreferrer"
+          className="hover:text-black transition-colors"
+        >
           <svg width="22" height="22" viewBox="0 0 256 256" fill="currentColor">
             <path d="M168 24v104.3a72 72 0 1 1-72-72c4.4 0 8.7.4 12.9 1.1v37.6a36 36 0 1 0 36.1 36V24h23z" />
           </svg>
         </a>
 
-        <a href="https://www.youtube.com/@AchadinhosLiviaeMaiquel" target="_blank" rel="noopener noreferrer" className="hover:text-red-500 transition-colors">
+        <a
+          href="https://www.youtube.com/@AchadinhosLiviaeMaiquel"
+          target="_blank"
+          rel="noopener noreferrer"
+          className="hover:text-red-500 transition-colors"
+        >
           <Youtube size={22} />
         </a>
       </div>
