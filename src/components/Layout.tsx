@@ -4,7 +4,7 @@ import { Instagram, Youtube } from "lucide-react";
 import { ScrollToTop } from "@/components/ScrollToTop";
 import { Helmet } from "react-helmet-async";
 import { useLocation } from "react-router-dom";
-import { useEffect } from "react"; // ⭐ GA
+import { useEffect } from "react";
 
 interface BreadcrumbItem {
   name: string;
@@ -19,8 +19,9 @@ interface LayoutProps {
 
 export function Layout({ children, showFooter = true, breadcrumb = [] }: LayoutProps) {
   const location = useLocation();
-  const canonicalUrl = `https://achadinhoslm.com.br${location.pathname}`;
+
   const BASE_URL = "https://achadinhoslm.com.br";
+  const canonicalUrl = `${BASE_URL}${location.pathname}`;
 
   const breadcrumbSchema =
     breadcrumb.length > 0
@@ -36,7 +37,30 @@ export function Layout({ children, showFooter = true, breadcrumb = [] }: LayoutP
         }
       : null;
 
-  // ⭐ GA4 — rastrear mudança de rota
+  const websiteSchema = {
+    "@context": "https://schema.org",
+    "@type": "WebSite",
+    name: "Achadinhos LM",
+    url: BASE_URL,
+    potentialAction: {
+      "@type": "SearchAction",
+      target: `${BASE_URL}/search?q={search_term_string}`,
+      "query-input": "required name=search_term_string",
+    },
+  };
+
+  const organizationSchema = {
+    "@context": "https://schema.org",
+    "@type": "Organization",
+    name: "Achadinhos LM",
+    url: BASE_URL,
+    sameAs: [
+      "https://www.instagram.com/achadosliviamaiquel/",
+      "https://www.tiktok.com/@achadosliviamaiquel",
+      "https://www.youtube.com/@AchadinhosLiviaeMaiquel",
+    ],
+  };
+
   useEffect(() => {
     if (window.gtag) {
       window.gtag('config', 'G-L8J2YZRFFP', {
@@ -47,9 +71,36 @@ export function Layout({ children, showFooter = true, breadcrumb = [] }: LayoutP
 
   return (
     <div className="min-h-screen flex flex-col bg-background">
-
       <Helmet>
+        <html lang="pt-BR" />
+        <meta charSet="utf-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1" />
+        <meta name="robots" content="index, follow, max-image-preview:large" />
+        <meta name="theme-color" content="#ffffff" />
         <link rel="canonical" href={canonicalUrl} />
+
+        {/* ===== Open Graph GLOBAL ===== */}
+        <meta property="og:site_name" content="Achadinhos LM" />
+        <meta property="og:locale" content="pt_BR" />
+        <meta property="og:type" content="website" />
+        <meta property="og:url" content={canonicalUrl} />
+        <meta property="og:title" content="Achadinhos LM & Promoções" />
+        <meta property="og:description" content="Ofertas da Shopee, Amazon e Mercado Livre todos os dias." />
+        <meta property="og:image" content={`${BASE_URL}/og-home.jpg`} />
+
+        {/* ===== Twitter ===== */}
+        <meta name="twitter:card" content="summary_large_image" />
+        <meta name="twitter:title" content="Achadinhos LM & Promoções" />
+        <meta name="twitter:description" content="Ofertas da Shopee, Amazon e Mercado Livre todos os dias." />
+        <meta name="twitter:image" content={`${BASE_URL}/og-home.jpg`} />
+
+        {/* ===== Schemas ===== */}
+        <script type="application/ld+json">
+          {JSON.stringify(websiteSchema)}
+        </script>
+        <script type="application/ld+json">
+          {JSON.stringify(organizationSchema)}
+        </script>
 
         {breadcrumbSchema && (
           <script type="application/ld+json">
@@ -57,7 +108,7 @@ export function Layout({ children, showFooter = true, breadcrumb = [] }: LayoutP
           </script>
         )}
 
-        {/* ⭐ GOOGLE ANALYTICS */}
+        {/* ===== GA4 ===== */}
         <script async src="https://www.googletagmanager.com/gtag/js?id=G-L8J2YZRFFP"></script>
         <script>
           {`
@@ -73,18 +124,7 @@ export function Layout({ children, showFooter = true, breadcrumb = [] }: LayoutP
       <ScrollToTop />
       <Header />
 
-      <main
-        className="
-        flex-1 
-        w-full 
-        max-w-[1000px]
-        mx-auto 
-        px-4 
-        sm:px-6 
-        lg:px-8
-        py-6
-      "
-      >
+      <main className="flex-1 w-full max-w-[1000px] mx-auto px-4 sm:px-6 lg:px-8 py-6">
         {children}
       </main>
 
