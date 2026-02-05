@@ -9,7 +9,7 @@ import { useProduct } from '@/hooks/useProducts'
 import { trackProductView } from '@/lib/analytics'
 import { CATEGORY_LABELS } from '@/types/product'
 import { ChevronLeft, Check, AlertCircle } from 'lucide-react'
-import { supabase } from '@/integrations/supabase/client'
+import { getSupabase } from "@/integrations/supabase/client"
 import { getLowestPrice, formatCurrency } from '@/lib/utils'
 import { Helmet } from 'react-helmet-async'
 

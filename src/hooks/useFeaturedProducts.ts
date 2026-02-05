@@ -2,12 +2,12 @@ import { useQuery } from '@tanstack/react-query'
 import { getSupabase } from '@/integrations/supabase/client'
 import type { Product } from '@/types/product'
 
-const supabase = getSupabase()
-
 export function useFeaturedProducts() {
   return useQuery({
     queryKey: ['featured-products'],
     queryFn: async (): Promise<Product[]> => {
+      const supabase = getSupabase()
+
       const { data, error } = await supabase
         .from('products')
         .select('*')

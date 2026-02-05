@@ -1,7 +1,7 @@
 import { useParams, useNavigate } from "react-router-dom"
 import { Layout } from "@/components/Layout"
 import { useQuery } from "@tanstack/react-query"
-import { supabase } from "@/integrations/supabase/client"
+import { getSupabase } from "@/integrations/supabase/client"
 import { ProductCard } from "@/components/ProductCard"
 import { Skeleton } from "@/components/ui/skeleton"
 import { ArrowLeft } from "lucide-react"

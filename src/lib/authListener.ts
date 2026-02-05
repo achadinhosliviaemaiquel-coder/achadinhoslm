@@ -1,4 +1,4 @@
-import { supabase } from "@/integrations/supabase/client";
+import { getSupabase } from "@/integrations/supabase/client";
 import type { Session } from "@supabase/supabase-js";
 
 type Callback = (session: Session | null) => void;

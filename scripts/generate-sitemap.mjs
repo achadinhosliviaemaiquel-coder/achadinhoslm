@@ -1,23 +1,31 @@
-import { createClient } from "@supabase/supabase-js"
-import fs from "fs"
+import "dotenv/config";
+import { createClient } from "@supabase/supabase-js";
+import fs from "fs";
 
-const SITE_URL = "https://achadinhoslm.com.br"
+const SITE_URL = "https://achadinhoslm.com.br";
 
-// Vercel injeta variáveis automaticamente
-const supabase = createClient(
-  process.env.VITE_SUPABASE_URL,
-  process.env.VITE_SUPABASE_ANON_KEY
-)
+const supabaseUrl = process.env.VITE_SUPABASE_URL;
+const supabaseAnonKey = process.env.VITE_SUPABASE_ANON_KEY;
+
+if (!supabaseUrl) {
+  throw new Error("VITE_SUPABASE_URL is missing");
+}
+
+if (!supabaseAnonKey) {
+  throw new Error("VITE_SUPABASE_ANON_KEY is missing");
+}
+
+const supabase = createClient(supabaseUrl, supabaseAnonKey);
 
 async function generate() {
   const { data: products, error } = await supabase
     .from("products")
     .select("slug, updated_at")
-    .eq("is_active", true)
+    .eq("is_active", true);
 
   if (error) {
-    console.error("Erro ao buscar produtos:", error)
-    process.exit(1)
+    console.error("Erro ao buscar produtos:", error);
+    process.exit(1);
   }
 
   const staticPages = [
@@ -31,7 +39,7 @@ async function generate() {
     "/category/pets",
     "/category/escritorio",
     "/category/suplementos",
-  ]
+  ];
 
   const urls = [
     ...staticPages.map(
@@ -52,15 +60,15 @@ async function generate() {
     <priority>0.9</priority>
   </url>`
     ),
-  ]
+  ];
 
   const sitemap = `<?xml version="1.0" encoding="UTF-8"?>
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
 ${urls.join("\n")}
-</urlset>`
+</urlset>`;
 
-  fs.writeFileSync("./public/sitemap.xml", sitemap)
-  console.log("✅ Sitemap gerado com sucesso!")
+  fs.writeFileSync("./public/sitemap.xml", sitemap);
+  console.log("✅ Sitemap gerado com sucesso!");
 }
 
-generate()
+generate();

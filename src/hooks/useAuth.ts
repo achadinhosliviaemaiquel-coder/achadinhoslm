@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from "react";
-import { supabase } from "@/integrations/supabase/client";
+import { getSupabase } from "@/integrations/supabase/client";
 import { initAuthListener } from "@/lib/authListener";
 import type { User, Session } from "@supabase/supabase-js";
 

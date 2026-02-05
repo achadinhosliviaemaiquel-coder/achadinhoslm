@@ -26,7 +26,7 @@ import { CATEGORY_LABELS, type Product, type ProductCategory } from "@/types/pro
 import { Skeleton } from "@/components/ui/skeleton"
 import { Pencil, Trash2, ExternalLink, Loader2 } from "lucide-react"
 import { getLowestPrice, formatCurrency } from "@/lib/utils"
-import { supabase } from "@/integrations/supabase/client"
+import { getSupabase } from "@/integrations/supabase/client"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 
 export function ProductList({ categoryFilter }: { categoryFilter: ProductCategory | "all" }) {
