@@ -12,7 +12,7 @@ export function initAuthListener(cb: Callback) {
   if (initialized) return;
   initialized = true;
 
-  const supabase = getSupabase();
+  const supabase = getSupabase(); // ✅ FIX
 
   supabase.auth.onAuthStateChange((_event, session) => {
     callback?.(session);
