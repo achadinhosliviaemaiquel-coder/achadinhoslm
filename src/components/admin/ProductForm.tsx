@@ -79,9 +79,16 @@ const emptyToNull = (v: unknown) =>
 // ✅ deixa number vazio virar null (e evita NaN travando o submit)
 const emptyNumberToNull = (v: unknown) => {
   if (v === "" || v === undefined || v === null) return null
-  const n = typeof v === "string" ? Number(v) : (v as number)
-  return Number.isFinite(n) ? n : null
+
+  if (typeof v === "string") {
+    const normalized = v.replace(",", ".")
+    const n = Number(normalized)
+    return Number.isFinite(n) ? n : null
+  }
+
+  return Number.isFinite(v as number) ? v : null
 }
+
 
 // ✅ resolve category_id a partir do slug (protege contra "all")
 async function resolveCategoryIdBySlug(categorySlug: string) {
@@ -225,8 +232,8 @@ export function ProductForm({ product, onSuccess }: Props) {
       if (!categoryId) {
         toast({
           variant: "destructive",
-          title: "Selecione uma categoria válida",
-          description: 'A categoria não pode ser "all" e precisa existir no banco.',
+          title: "Campos inválidos",
+          description: "Verifique os preços e URLs preenchidos."
         })
         return
       }
