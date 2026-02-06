@@ -6,8 +6,19 @@ import { ProductList } from "@/components/admin/ProductList";
 import { Button } from "@/components/ui/button";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { useAuth } from "@/hooks/useAuth";
-import { Loader2, LogOut, Plus, List, BarChart3, Rocket, Database, Globe } from "lucide-react";
+import {
+  Loader2,
+  LogOut,
+  Plus,
+  List,
+  BarChart3,
+  Rocket,
+  Database,
+  Globe,
+  MousePointerClick,
+} from "lucide-react";
 import { CATEGORY_LABELS, type ProductCategory } from "@/types/product";
+import ClicksDashboard from "@/components/admin/ClicksDashboard";
 
 export default function AdminPage() {
   const { user, isAdmin, loading, signOut } = useAuth();
@@ -56,7 +67,6 @@ export default function AdminPage() {
   return (
     <Layout showFooter={false}>
       <div className="space-y-8">
-
         {/* HEADER */}
         <div className="flex items-center justify-between">
           <div>
@@ -72,39 +82,41 @@ export default function AdminPage() {
         {/* ATALHOS */}
         <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
           <Button asChild variant="secondary" className="justify-start gap-2">
-            <a href="https://analytics.google.com" target="_blank">
+            <a href="https://analytics.google.com" target="_blank" rel="noreferrer">
               <BarChart3 className="h-4 w-4" /> Analytics
             </a>
           </Button>
           <Button asChild variant="secondary" className="justify-start gap-2">
-            <a href="https://app.netlify.com" target="_blank">
+            <a href="https://app.netlify.com" target="_blank" rel="noreferrer">
               <Rocket className="h-4 w-4" /> Netlify
             </a>
           </Button>
           <Button asChild variant="secondary" className="justify-start gap-2">
-            <a href="https://supabase.com/dashboard" target="_blank">
+            <a href="https://supabase.com/dashboard" target="_blank" rel="noreferrer">
               <Database className="h-4 w-4" /> Supabase
             </a>
           </Button>
           <Button asChild variant="secondary" className="justify-start gap-2">
-            <a href="/" target="_blank">
+            <a href="/" target="_blank" rel="noreferrer">
               <Globe className="h-4 w-4" /> Ver Site
             </a>
           </Button>
         </div>
 
         <Tabs value={activeTab} onValueChange={setActiveTab}>
-          <TabsList className="grid w-full grid-cols-2">
+          <TabsList className="grid w-full grid-cols-3">
             <TabsTrigger value="list" className="flex items-center gap-2">
               <List className="h-4 w-4" /> Produtos
             </TabsTrigger>
             <TabsTrigger value="add" className="flex items-center gap-2">
               <Plus className="h-4 w-4" /> Adicionar
             </TabsTrigger>
+            <TabsTrigger value="clicks" className="flex items-center gap-2">
+              <MousePointerClick className="h-4 w-4" /> Cliques
+            </TabsTrigger>
           </TabsList>
 
           <TabsContent value="list" className="mt-6 space-y-6">
-
             {/* FILTRO */}
             <div className="flex flex-wrap gap-2">
               <Button
@@ -128,15 +140,15 @@ export default function AdminPage() {
             </div>
 
             {/* LISTA COM PAGINAÇÃO */}
-            <ProductList
-              categoryFilter={activeCategory}
-              page={page}
-              setPage={setPage}
-            />
+            <ProductList categoryFilter={activeCategory} page={page} setPage={setPage} />
           </TabsContent>
 
           <TabsContent value="add" className="mt-6">
             <ProductForm onSuccess={() => setActiveTab("list")} />
+          </TabsContent>
+
+          <TabsContent value="clicks" className="mt-6">
+            <ClicksDashboard />
           </TabsContent>
         </Tabs>
       </div>

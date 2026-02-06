@@ -13,6 +13,7 @@ import { useToast } from '@/hooks/use-toast'
 import { CATEGORY_LABELS, type Product, type ProductCategory } from '@/types/product'
 import { Loader2 } from 'lucide-react'
 import BrandFormModal from '@/components/admin/BrandFormModal'
+import { getSupabase } from '@/integrations/supabase/client'
 
 const SUBCATEGORY_OPTIONS: Record<string, { value: string; label: string; keywords: string[] }[]> = {
   beleza: [
@@ -75,22 +76,58 @@ const SUBCATEGORY_OPTIONS: Record<string, { value: string; label: string; keywor
 const emptyToNull = (v: unknown) =>
   typeof v === "string" && v.trim() === "" ? null : v
 
+// ✅ deixa number vazio virar null (e evita NaN travando o submit)
+const emptyNumberToNull = (v: unknown) => {
+  if (v === "" || v === undefined || v === null) return null
+  const n = typeof v === "string" ? Number(v) : (v as number)
+  return Number.isFinite(n) ? n : null
+}
+
+// ✅ resolve category_id a partir do slug (protege contra "all")
+async function resolveCategoryIdBySlug(categorySlug: string) {
+  const supabase = getSupabase()
+
+  if (!categorySlug || categorySlug === "all") return null
+
+  const { data, error } = await supabase
+    .from("categories")
+    .select("id")
+    .eq("slug", categorySlug)
+    .maybeSingle()
+
+  if (error) throw error
+  return data?.id ?? null
+}
+
 const productSchema = z.object({
   name: z.string().min(1),
   slug: z.string().min(1),
-  category: z.string().min(1),
+
+  // ✅ impede "all" e obriga selecionar algo válido
+  category: z.string().min(1).refine((v) => v !== "all", {
+    message: 'Categoria inválida ("all")',
+  }),
+
   brand_slug: z.string().min(1),
+
   subcategory: z.preprocess(emptyToNull, z.string().nullable().optional()),
   description: z.preprocess(emptyToNull, z.string().nullable().optional()),
   benefits: z.preprocess(emptyToNull, z.string().nullable().optional()),
+
   price_label: z.string().min(1),
   image_urls: z.preprocess(emptyToNull, z.string().nullable().optional()),
-  shopee_price: z.coerce.number().nullable().optional(),
-  mercadolivre_price: z.coerce.number().nullable().optional(),
-  amazon_price: z.coerce.number().nullable().optional(),
+
+  // ✅ CORRIGIDO
+  shopee_price: z.preprocess(emptyNumberToNull, z.number().nullable().optional()),
+  mercadolivre_price: z.preprocess(emptyNumberToNull, z.number().nullable().optional()),
+  amazon_price: z.preprocess(emptyNumberToNull, z.number().nullable().optional()),
+
   shopee_link: z.preprocess(emptyToNull, z.string().url().nullable().optional()),
   mercadolivre_link: z.preprocess(emptyToNull, z.string().url().nullable().optional()),
   amazon_link: z.preprocess(emptyToNull, z.string().url().nullable().optional()),
+
+  // ✅ Review
+  review_url: z.preprocess(emptyToNull, z.string().url().nullable().optional()),
 })
 
 type ProductFormData = z.infer<typeof productSchema>
@@ -120,6 +157,13 @@ export function ProductForm({ product, onSuccess }: Props) {
       benefits: "",
       image_urls: "",
       price_label: "",
+      shopee_link: "",
+      mercadolivre_link: "",
+      amazon_link: "",
+      shopee_price: null,
+      mercadolivre_price: null,
+      amazon_price: null,
+      review_url: "",
     },
   })
 
@@ -129,7 +173,14 @@ export function ProductForm({ product, onSuccess }: Props) {
     reset({
       name: product.name ?? "",
       slug: product.slug ?? "",
-      category: (product as any).category ?? "",
+
+      // ✅ mais tolerante (se vier category.slug do select com join)
+      category:
+        (product as any)?.category?.slug ??
+        (product as any)?.category_slug ??
+        (product as any)?.category ??
+        "",
+
       brand_slug: product.brand_slug ?? "generico",
       description: product.description ?? "",
       benefits: product.benefits?.join('\n') ?? "",
@@ -142,6 +193,7 @@ export function ProductForm({ product, onSuccess }: Props) {
       shopee_price: product.shopee_price ?? null,
       mercadolivre_price: product.mercadolivre_price ?? null,
       amazon_price: product.amazon_price ?? null,
+      review_url: (product as any).review_url ?? "",
     })
   }, [product, reset])
 
@@ -162,12 +214,41 @@ export function ProductForm({ product, onSuccess }: Props) {
   const onSubmit = async (data: ProductFormData) => {
     setIsSubmitting(true)
     try {
+      const resolvedCategoryId = await resolveCategoryIdBySlug(data.category)
+
+      const categoryId =
+        resolvedCategoryId ??
+        (product as any)?.category_id ??
+        (product as any)?.categoryId ??
+        null
+
+      if (!categoryId) {
+        toast({
+          variant: "destructive",
+          title: "Selecione uma categoria válida",
+          description: 'A categoria não pode ser "all" e precisa existir no banco.',
+        })
+        return
+      }
+
       const productData = {
         ...data,
+
+        // ✅ essencial para o NOT NULL do banco
+        category_id: categoryId,
+
+        // mantém compatibilidade com seu tipo local (opcional)
         category: data.category as ProductCategory,
+
         benefits: data.benefits ? data.benefits.split('\n').map(b => b.trim()).filter(Boolean) : [],
         image_urls: data.image_urls ? data.image_urls.split('\n').map(i => i.trim()).filter(Boolean) : [],
         is_active: true,
+
+        // garante null quando vazio (schema já faz, mas aqui mantém explícito)
+        review_url: data.review_url ?? null,
+        shopee_price: data.shopee_price ?? null,
+        mercadolivre_price: data.mercadolivre_price ?? null,
+        amazon_price: data.amazon_price ?? null,
       }
 
       if (product) await updateProduct.mutateAsync({ id: product.id, ...productData })
@@ -176,7 +257,8 @@ export function ProductForm({ product, onSuccess }: Props) {
       toast({ title: product ? 'Produto atualizado!' : 'Produto criado!' })
       reset()
       onSuccess?.()
-    } catch {
+    } catch (err) {
+      console.error(err)
       toast({ variant: 'destructive', title: 'Erro ao salvar' })
     } finally {
       setIsSubmitting(false)
@@ -204,10 +286,25 @@ export function ProductForm({ product, onSuccess }: Props) {
     if (match) setValue("subcategory", match.value)
   }, [name, category, setValue])
 
+  const nameField = register("name")
+
   return (
     <>
-      <form onSubmit={handleSubmit(onSubmit)} className="space-y-6">
-        <Input {...register('name')} onChange={(e) => { register('name').onChange(e); handleNameChange(e.target.value) }} placeholder="Nome do Produto" />
+      <form
+        onSubmit={handleSubmit(
+          onSubmit,
+          (errors) => {
+            console.log("❌ Erros de validação do ProductForm:", errors)
+            toast({
+              variant: "destructive",
+              title: "Verifique os campos obrigatórios",
+              description: "Abra o console para ver quais campos estão inválidos.",
+            })
+          }
+        )}
+        className="space-y-6"
+      >
+
         <Input {...register('slug')} placeholder="Slug" />
 
         <Controller
@@ -224,6 +321,37 @@ export function ProductForm({ product, onSuccess }: Props) {
             </Select>
           )}
         />
+
+        {/* ✅ SUBCATEGORIA (voltou para cadastro e edição) */}
+        {category && SUBCATEGORY_OPTIONS[category] && (
+          <div className="space-y-2">
+            <Label>Subcategoria</Label>
+
+            <Controller
+              name="subcategory"
+              control={control}
+              render={({ field }) => (
+                <Select value={field.value || ""} onValueChange={field.onChange}>
+                  <SelectTrigger>
+                    <SelectValue placeholder="Selecione uma subcategoria" />
+                  </SelectTrigger>
+
+                  <SelectContent>
+                    {SUBCATEGORY_OPTIONS[category].map((sub) => (
+                      <SelectItem key={sub.value} value={sub.value}>
+                        {sub.label}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+              )}
+            />
+
+            <p className="text-xs text-muted-foreground">
+              Opcional. Ajuda na organização e filtros (ex.: Moda → Vestidos).
+            </p>
+          </div>
+        )}
 
         <Label>Marca</Label>
 
@@ -267,12 +395,42 @@ export function ProductForm({ product, onSuccess }: Props) {
 
         <div className="space-y-4">
           <h2 className="font-semibold">Links de Afiliado</h2>
+
           <Input {...register('shopee_link')} placeholder="Link Shopee" />
-          <Input type="number" step="0.01" {...register('shopee_price')} placeholder="Preço Shopee" />
+          <Input
+            type="number"
+            step="0.01"
+            {...register('shopee_price', { setValueAs: (v) => (v === "" ? null : Number(v)) })}
+            placeholder="Preço Shopee"
+          />
+
           <Input {...register('mercadolivre_link')} placeholder="Link Mercado Livre" />
-          <Input type="number" step="0.01" {...register('mercadolivre_price')} placeholder="Preço Mercado Livre" />
+          <Input
+            type="number"
+            step="0.01"
+            {...register('mercadolivre_price', { setValueAs: (v) => (v === "" ? null : Number(v)) })}
+            placeholder="Preço Mercado Livre"
+          />
+
           <Input {...register('amazon_link')} placeholder="Link Amazon" />
-          <Input type="number" step="0.01" {...register('amazon_price')} placeholder="Preço Amazon" />
+          <Input
+            type="number"
+            step="0.01"
+            {...register('amazon_price', { setValueAs: (v) => (v === "" ? null : Number(v)) })}
+            placeholder="Preço Amazon"
+          />
+        </div>
+
+        <div className="space-y-2">
+          <Label>Review (YouTube ou Instagram)</Label>
+          <Input
+            type="url"
+            {...register("review_url")}
+            placeholder="https://www.youtube.com/... ou https://www.instagram.com/..."
+          />
+          <p className="text-xs text-muted-foreground">
+            Opcional. Ajuda quem está indeciso a comprar.
+          </p>
         </div>
 
         <Button type="submit" className="w-full" disabled={isSubmitting}>

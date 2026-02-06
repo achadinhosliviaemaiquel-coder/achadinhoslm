@@ -214,8 +214,9 @@ export default function CategoryPage() {
             <h2 className="text-lg font-semibold">Marcas em destaque</h2>
             <div className="flex gap-3 overflow-x-auto no-scrollbar snap-x snap-mandatory scroll-smooth pb-3">
               {brands.map((brand) => (
-                <BrandCard
+                < BrandCard
                   key={brand.slug}
+                  category={category!}
                   name={brand.name}
                   logo={`/brands/${brand.slug}.png`}
                   slug={brand.slug}

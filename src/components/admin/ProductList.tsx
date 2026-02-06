@@ -24,10 +24,17 @@ import { useProducts, useDeleteProduct } from "@/hooks/useProducts"
 import { useToast } from "@/hooks/use-toast"
 import { CATEGORY_LABELS, type Product, type ProductCategory } from "@/types/product"
 import { Skeleton } from "@/components/ui/skeleton"
-import { Pencil, Trash2, ExternalLink, Loader2 } from "lucide-react"
+import { Pencil, Trash2, ExternalLink, Loader2, Youtube, Instagram, Eye } from "lucide-react"
 import { getLowestPrice, formatCurrency } from "@/lib/utils"
 import { getSupabase } from "@/integrations/supabase/client"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
+
+function reviewIcon(url: string) {
+  const u = url.toLowerCase()
+  if (u.includes("youtube") || u.includes("youtu.be")) return <Youtube className="h-3.5 w-3.5" />
+  if (u.includes("instagram")) return <Instagram className="h-3.5 w-3.5" />
+  return <Eye className="h-3.5 w-3.5" />
+}
 
 export function ProductList({ categoryFilter }: { categoryFilter: ProductCategory | "all" }) {
   const [page, setPage] = useState(1)
@@ -92,6 +99,7 @@ export function ProductList({ categoryFilter }: { categoryFilter: ProductCategor
     try {
       await deleteProduct.mutateAsync(product.id)
       toast({ title: "Produto excluído" })
+      refetch()
     } catch {
       toast({ variant: "destructive", title: "Erro ao excluir" })
     }
@@ -127,15 +135,23 @@ export function ProductList({ categoryFilter }: { categoryFilter: ProductCategor
 
       <div className="space-y-4">
         <div className="flex items-center gap-2">
-          <input type="checkbox" checked={selectedIds.length === products.length} onChange={selectAll} />
+          <input
+            type="checkbox"
+            checked={products.length > 0 && selectedIds.length === products.length}
+            onChange={selectAll}
+          />
           <span className="text-sm text-muted-foreground">Selecionar todos</span>
         </div>
 
         {products.map((product) => {
           const lowestPrice = getLowestPrice(product)
+          const reviewUrl = (product as any).review_url as string | null | undefined
 
           return (
-            <div key={product.id} className="bg-card rounded-xl p-4 shadow-soft flex gap-4 items-start justify-between">
+            <div
+              key={product.id}
+              className="bg-card rounded-xl p-4 shadow-soft flex gap-4 items-start justify-between"
+            >
               <input
                 type="checkbox"
                 checked={selectedIds.includes(product.id)}
@@ -144,12 +160,28 @@ export function ProductList({ categoryFilter }: { categoryFilter: ProductCategor
 
               <div className="flex gap-4 flex-1 min-w-0">
                 <div className="w-16 h-16 rounded-lg overflow-hidden bg-muted flex-shrink-0">
-                  <img src={product.image_urls?.[0] || "/placeholder.svg"} className="w-full h-full object-cover" />
+                  <img
+                    src={product.image_urls?.[0] || "/placeholder.svg"}
+                    className="w-full h-full object-cover"
+                    alt={product.name}
+                    loading="lazy"
+                  />
                 </div>
 
                 <div className="flex-1 min-w-0 space-y-1">
                   <h3 className="font-semibold truncate">{product.name}</h3>
-                  <Badge variant="secondary">{CATEGORY_LABELS[product.category]}</Badge>
+
+                  <div className="flex flex-wrap items-center gap-2">
+                    <Badge variant="secondary">{CATEGORY_LABELS[product.category]}</Badge>
+
+                    {/* ✅ Badge Review */}
+                    {reviewUrl && (
+                      <Badge variant="outline" className="gap-1">
+                        {reviewIcon(reviewUrl)}
+                        Review
+                      </Badge>
+                    )}
+                  </div>
 
                   {lowestPrice && (
                     <p className="text-sm font-semibold text-emerald-600">
@@ -238,12 +270,25 @@ export function ProductList({ categoryFilter }: { categoryFilter: ProductCategor
       )}
 
       {/* EDIT DIALOG */}
-      <Dialog open={!!editingProduct} onOpenChange={() => setEditingProduct(null)}>
+      <Dialog
+        open={!!editingProduct}
+        onOpenChange={(open) => {
+          if (!open) setEditingProduct(null)
+        }}
+      >
         <DialogContent className="max-w-lg max-h-[90vh] overflow-y-auto">
           <DialogHeader>
             <DialogTitle>Editar Produto</DialogTitle>
           </DialogHeader>
-          {editingProduct && <ProductForm product={editingProduct} onSuccess={() => setEditingProduct(null)} />}
+          {editingProduct && (
+            <ProductForm
+              product={editingProduct}
+              onSuccess={() => {
+                setEditingProduct(null)
+                refetch() // ✅ reflete a edição imediatamente
+              }}
+            />
+          )}
         </DialogContent>
       </Dialog>
     </>

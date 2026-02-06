@@ -2,8 +2,23 @@
 <html lang="pt-BR">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no"
+    />
     <meta name="theme-color" content="#ec4899" />
+
+    <!-- Google Analytics (GA4) -->
+    <script async src="https://www.googletagmanager.com/gtag/js?id=%VITE_GA_ID%"></script>
+    <script>
+      window.dataLayer = window.dataLayer || [];
+      function gtag(){dataLayer.push(arguments);}
+      gtag('js', new Date());
+      gtag('config', '%VITE_GA_ID%', {
+        anonymize_ip: true,
+        send_page_view: true
+      });
+    </script>
 
     <!-- SEO PRINCIPAL -->
     <title>Achadinhos LM: Promoções Shopee, Amazon e Mercado Livre</title>
@@ -17,28 +32,40 @@
     />
     <link rel="canonical" href="https://achadinhoslm.vercel.app/" />
 
-    <!-- OPEN GRAPH (FACEBOOK, WHATSAPP, LINKEDIN, ETC) -->
+    <!-- OPEN GRAPH -->
     <meta property="og:type" content="website" />
     <meta property="og:site_name" content="Achadinhos LM" />
     <meta property="og:locale" content="pt_BR" />
-    <meta property="og:title" content="Achadinhos LM: Promoções Shopee, Amazon e Mercado Livre" />
+    <meta
+      property="og:title"
+      content="Achadinhos LM: Promoções Shopee, Amazon e Mercado Livre"
+    />
     <meta
       property="og:description"
       content="Promoções e ofertas da Shopee, Amazon e Mercado Livre. Achadinhos com preço baixo em beleza, casa, eletrônicos e moda."
     />
     <meta property="og:url" content="https://achadinhoslm.vercel.app/" />
-    <meta property="og:image" content="https://achadinhoslm.vercel.app/og-home.jpg" />
+    <meta
+      property="og:image"
+      content="https://achadinhoslm.vercel.app/og-home.jpg"
+    />
     <meta property="og:image:width" content="1200" />
     <meta property="og:image:height" content="630" />
 
     <!-- TWITTER -->
     <meta name="twitter:card" content="summary_large_image" />
-    <meta name="twitter:title" content="Achadinhos LM: Promoções Shopee, Amazon e Mercado Livre" />
+    <meta
+      name="twitter:title"
+      content="Achadinhos LM: Promoções Shopee, Amazon e Mercado Livre"
+    />
     <meta
       name="twitter:description"
       content="Achadinhos com preço baixo e promoções reais da Shopee, Amazon e Mercado Livre."
     />
-    <meta name="twitter:image" content="https://achadinhoslm.vercel.app/og-home.jpg" />
+    <meta
+      name="twitter:image"
+      content="https://achadinhoslm.vercel.app/og-home.jpg"
+    />
 
     <!-- Favicon -->
     <link
@@ -47,6 +74,7 @@
       href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🛍️</text></svg>"
     />
   </head>
+
   <body>
     <div id="root"></div>
     <script type="module" src="/src/main.tsx"></script>
