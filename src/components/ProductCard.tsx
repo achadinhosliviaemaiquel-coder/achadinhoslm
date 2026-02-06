@@ -2,6 +2,7 @@ import { Link } from "react-router-dom"
 import { Badge } from "@/components/ui/badge"
 import type { Product } from "@/types/product"
 import { getLowestPrice, formatCurrency } from "@/lib/utils"
+import { CATEGORY_LABELS } from "@/types/product"
 
 interface ProductCardProps {
   product: Product
@@ -15,12 +16,30 @@ function parsePrice(label?: string | null): number | null {
   return isNaN(parsed) ? null : parsed
 }
 
+// ✅ humaniza slug (limpeza-facial -> Limpeza Facial | protetor_solar -> Protetor Solar)
+function humanizeSlug(s?: string | null): string {
+  if (!s) return ""
+  return s
+    .replace(/[-_]+/g, " ")
+    .trim()
+    .replace(/\b\w/g, (c) => c.toUpperCase())
+}
+
 export function ProductCard({ product }: ProductCardProps) {
   const lowestPrice = getLowestPrice(product) ?? null
   const manualPrice = parsePrice(product.price_label)
 
   const finalPrice =
     lowestPrice && manualPrice ? Math.min(lowestPrice, manualPrice) : (lowestPrice ?? manualPrice)
+
+  // ✅ Badge correto: Categoria + Subcategoria (se existir)
+  const categorySlug = (product as any).category as string | undefined
+  const subSlug = (product as any).subcategory as string | undefined
+
+  const categoryLabel = categorySlug ? (CATEGORY_LABELS as any)[categorySlug] ?? humanizeSlug(categorySlug) : "Categoria"
+  const subLabel = subSlug ? humanizeSlug(subSlug) : null
+
+  const badgeText = subLabel ? `${categoryLabel} • ${subLabel}` : categoryLabel
 
   return (
     <Link
@@ -53,7 +72,7 @@ export function ProductCard({ product }: ProductCardProps) {
       {/* CONTEÚDO */}
       <div className="px-4 pb-3 flex flex-col flex-1">
         <Badge className="text-[10px] bg-muted text-muted-foreground font-medium px-2 py-0.5 rounded-md w-fit mb-2">
-          {product.categories?.name ?? "Categoria"}
+          {badgeText}
         </Badge>
 
         {/* 3 linhas = simétrico (Amazon) */}

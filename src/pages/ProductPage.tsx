@@ -8,20 +8,21 @@ import { useProduct } from "@/hooks/useProducts"
 import { trackProductView } from "@/lib/analytics"
 import { CATEGORY_LABELS } from "@/types/product"
 import { ChevronLeft, Check, AlertCircle } from "lucide-react"
-import { getSupabase } from "@/integrations/supabase/client"
 import { getLowestPrice, formatCurrency } from "@/lib/utils"
 import { Helmet } from "react-helmet-async"
 import { useProductMetrics } from "@/hooks/useProductMetrics"
 import { StoreButton } from "@/components/StoreButton"
 
 function parsePrice(label: string) {
-  const value = label.replace(/[^\d,]/g, "").replace(",", ".")
-  return parseFloat(value)
+  const value = (label || "").replace(/[^\d,]/g, "").replace(",", ".")
+  const n = parseFloat(value)
+  return Number.isFinite(n) ? n : NaN
 }
 
 function getReviewStyles(url: string) {
   if (url.includes("youtube")) return "w-full bg-red-600 hover:bg-red-700 text-white font-semibold"
-  if (url.includes("instagram")) return "w-full bg-gradient-to-r from-pink-500 via-red-500 to-yellow-500 text-white font-semibold"
+  if (url.includes("instagram"))
+    return "w-full bg-gradient-to-r from-pink-500 via-red-500 to-yellow-500 text-white font-semibold"
   return "w-full border border-primary text-primary hover:bg-primary/10"
 }
 
@@ -45,7 +46,7 @@ function isSafeHttpUrl(raw: string) {
 /**
  * Se receber algo como:
  *  - /api/go?url=https%3A%2F%2Famzn.to%2Fxxx&...
- *  - https://achadinhoslm.vercel.app/api/go?url=https%3A...
+ *  - https://seusite.vercel.app/api/go?url=https%3A...
  * devolve a URL externa (https://...).
  * Tenta no máximo 2 "unwraps" para evitar loop.
  */
@@ -55,7 +56,6 @@ function unwrapNestedGoUrl(raw: string) {
   for (let i = 0; i < 2; i++) {
     if (!current) break
 
-    // identifica /api/go (relativo) ou absoluto com pathname /api/go
     const isGo =
       current.startsWith("/api/go") ||
       (() => {
@@ -70,7 +70,6 @@ function unwrapNestedGoUrl(raw: string) {
     if (!isGo) break
 
     try {
-      // base do browser para suportar relativo
       const u = new URL(current, window.location.origin)
       const inner = u.searchParams.get("url")
       current = inner ? decodeURIComponent(inner) : ""
@@ -85,8 +84,6 @@ function unwrapNestedGoUrl(raw: string) {
 }
 
 export default function ProductPage() {
-  // ✅ Hooks sempre no topo
-  const supabase = getSupabase()
   const { slug } = useParams<{ slug: string }>()
   const navigate = useNavigate()
   const location = useLocation()
@@ -94,22 +91,22 @@ export default function ProductPage() {
   const { data: product, isLoading, error } = useProduct(slug || "")
   const [showOtherStores, setShowOtherStores] = useState(false)
 
-  // ✅ Hook sempre chamado (ele mesmo controla enabled internamente)
+  // ✅ Hook sempre chamado
   const metricsQuery = useProductMetrics(product?.id)
 
-  const showTrending =
-    !!product?.id &&
-    (metricsQuery.data?.views7d ?? 0) >= 200 &&
-    (metricsQuery.data?.efficiency7d ?? 0) >= 5
+  // ✅ Regras “Em alta”
+  const views7d = metricsQuery.data?.views7d ?? 0
+  const efficiency7d = metricsQuery.data?.efficiency7d ?? 0
+  const showTrending = !!product?.id && views7d >= 200 && efficiency7d >= 5
 
   const hasReview = !!product?.review_url
 
-  // ✅ useMemo sempre chamado (mesmo sem product)
   const offers = useMemo<Offer[]>(() => {
     if (!product) return []
     const list: Offer[] = []
     if (product.amazon_link) list.push({ store: "amazon", label: "Comprar agora na Amazon", url: product.amazon_link, priority: 0 })
-    if (product.mercadolivre_link) list.push({ store: "mercadolivre", label: "Comprar agora no Mercado Livre", url: product.mercadolivre_link, priority: 1 })
+    if (product.mercadolivre_link)
+      list.push({ store: "mercadolivre", label: "Comprar agora no Mercado Livre", url: product.mercadolivre_link, priority: 1 })
     if (product.shopee_link) list.push({ store: "shopee", label: "Comprar agora na Shopee", url: product.shopee_link, priority: 2 })
     return list.sort((a, b) => a.priority - b.priority)
   }, [product])
@@ -123,20 +120,16 @@ export default function ProductPage() {
     else navigate(-1)
   }
 
-  // ✅ Desktop abre nova aba; mobile/in-app mantém na mesma aba (mais confiável)
   const isMobileLike = () => {
     if (typeof navigator === "undefined") return false
     return /Android|iPhone|iPad|iPod/i.test(navigator.userAgent)
   }
 
-  // 🔗 Helper: monta URL do redirect server-side (sempre registra outbound)
-  // ✅ BLINDADO contra url interna (/api/go?url=...)
   const buildGoUrl = (offer: Offer) => {
     if (!product) return "#"
 
     const finalUrl = unwrapNestedGoUrl(offer.url) || offer.url
 
-    // Só permite http/https — evita 400 e evita mandar lixo
     if (!isSafeHttpUrl(finalUrl)) {
       console.error("[buildGoUrl] URL inválida para outbound:", { offerUrl: offer.url, finalUrl })
       return "#"
@@ -151,49 +144,44 @@ export default function ProductPage() {
     return `/api/go?${params.toString()}`
   }
 
+  /**
+   * TRACKING VIEW (server-side)
+   * - Gera session_id estável por sessão
+   * - Não faz dedupe “definitivo” no client (isso fica no backend)
+   * - Throttle curto (10s) só pra evitar spam acidental em dev/hot reload
+   */
   useEffect(() => {
     if (!product?.id) return
 
-    // 1) session_id persistente por sessão/aba
     const sessionKey = "sid"
     let sid = sessionStorage.getItem(sessionKey)
 
     if (!sid) {
-      // fallback caso randomUUID não exista em algum in-app browser
       sid =
         globalThis.crypto && "randomUUID" in globalThis.crypto
           ? (globalThis.crypto as Crypto).randomUUID()
           : `${Date.now()}-${Math.random().toString(16).slice(2)}`
-
       sessionStorage.setItem(sessionKey, sid)
     }
 
-    // 2) dedupe no front: 1 view por produto por sessão
-    const viewedKey = `viewed:${product.id}`
-    if (sessionStorage.getItem(viewedKey)) return
-    sessionStorage.setItem(viewedKey, "1")
+    // throttle curto por produto (não é dedupe): evita múltiplos hits em poucos segundos
+    const throttleKey = `view:throttle:${product.id}`
+    const last = Number(sessionStorage.getItem(throttleKey) || "0")
+    const now = Date.now()
+    if (Number.isFinite(last) && now - last < 10_000) return
+    sessionStorage.setItem(throttleKey, String(now))
 
-    // 3) evento de view (24h/7d) no backend
-    void fetch(`/api/view?product_id=${encodeURIComponent(product.id)}&session_id=${encodeURIComponent(sid)}`, {
-      method: "GET",
-      keepalive: true,
-    })
+    void fetch(
+      `/api/view?product_id=${encodeURIComponent(product.id)}&session_id=${encodeURIComponent(sid)}`,
+      { method: "GET", keepalive: true }
+    )
+  }, [product?.id])
 
-    // 4) contador total (all-time) no products.views_count
-    ;(async () => {
-      try {
-        await supabase.rpc("increment_product_views", { product_id: product.id })
-      } catch {
-        // não quebra UX
-      }
-    })()
-  }, [product?.id, supabase])
-
+  // (Opcional) tracking “client analytics” separado (GA/etc)
   useEffect(() => {
     if (product) trackProductView(product.slug, product.category)
   }, [product])
 
-  // ✅ Agora sim: returns condicionais abaixo de todos os hooks
   if (isLoading) {
     return (
       <Layout>
@@ -225,6 +213,20 @@ export default function ProductPage() {
   const lowestPrice = getLowestPrice(product)
   const manualPrice = parsePrice(product.price_label)
   const finalPrice = lowestPrice && !isNaN(manualPrice) ? Math.min(lowestPrice, manualPrice) : manualPrice
+
+  /**
+   * ✅ URGÊNCIA: só quando existe motivo.
+   * - 1) prioridade: urgency_label (admin)
+   * - 2) fallback automático: quando “Em alta”
+   */
+  const urgencyFromData = (product.urgency_label || "").trim()
+  const computedUrgency = !urgencyFromData && showTrending ? "Alta demanda hoje" : ""
+  const urgencyText = urgencyFromData || computedUrgency
+
+  /**
+   * ✅ “Sinais do produto” só aparece se existir sinal real
+   */
+  const shouldShowSignalsCard = Boolean(showTrending || hasReview || urgencyText)
 
   return (
     <Layout
@@ -258,9 +260,9 @@ export default function ProductPage() {
                   className="w-full max-h-[520px] object-contain bg-muted"
                   loading="eager"
                 />
-                {product.urgency_label && (
+                {urgencyText && (
                   <span className="absolute top-3 left-3 bg-amber-300 text-black text-[11px] font-semibold px-3 py-1 rounded-md">
-                    {product.urgency_label}
+                    {urgencyText}
                   </span>
                 )}
               </div>
@@ -283,37 +285,39 @@ export default function ProductPage() {
                 <span className="text-xs text-muted-foreground">preço verificado • pode mudar</span>
               </div>
 
-              <div className="rounded-2xl border border-black/10 p-4">
-                <div className="flex items-center justify-between">
-                  <div className="font-semibold text-sm">Sinais do produto</div>
+              {!shouldShowSignalsCard && (
+                <p className="text-xs text-muted-foreground leading-relaxed">
+                  Redirecionamento seguro para a loja oficial. Preço e estoque podem variar.
+                </p>
+              )}
+
+              {shouldShowSignalsCard && (
+                <div className="rounded-2xl border border-black/10 p-4">
+                  <div className="flex items-center justify-between">
+                    <div className="font-semibold text-sm">Sinais do produto</div>
+                  </div>
+
+                  <div className="mt-3 flex flex-wrap items-center gap-2">
+                    {metricsQuery.isLoading ? (
+                      <span className="text-xs text-muted-foreground">Carregando…</span>
+                    ) : (
+                      <>
+                        {showTrending && <Badge className="bg-amber-200 text-black hover:bg-amber-200">🔥 Em alta</Badge>}
+                        {hasReview && (
+                          <Badge variant="outline" className="gap-1">
+                            ✅ Review disponível
+                          </Badge>
+                        )}
+                        {urgencyText && <Badge className="bg-amber-200 text-black hover:bg-amber-200">⏳ {urgencyText}</Badge>}
+                      </>
+                    )}
+                  </div>
+
+                  <div className="mt-2 text-xs text-muted-foreground leading-relaxed">
+                    Você será redirecionado para a loja oficial. Preço e estoque podem variar.
+                  </div>
                 </div>
-
-                <div className="mt-3 flex flex-wrap items-center gap-2">
-                  {metricsQuery.isLoading ? (
-                    <span className="text-xs text-muted-foreground">Carregando…</span>
-                  ) : (
-                    <>
-                      {showTrending && (
-                        <Badge className="bg-amber-200 text-black hover:bg-amber-200">🔥 Em alta</Badge>
-                      )}
-
-                      {hasReview && (
-                        <Badge variant="outline" className="gap-1">
-                          ✅ Review disponível
-                        </Badge>
-                      )}
-
-                      {!showTrending && !hasReview && (
-                        <span className="text-xs text-muted-foreground">Oferta verificada e pronta para comprar.</span>
-                      )}
-                    </>
-                  )}
-                </div>
-
-                <div className="mt-2 text-xs text-muted-foreground leading-relaxed">
-                  Você será redirecionado para a loja oficial. Preço e estoque podem variar.
-                </div>
-              </div>
+              )}
 
               {hasStoreLinks && primaryOffer && (
                 <div className="space-y-3">
@@ -327,7 +331,6 @@ export default function ProductPage() {
                         category={product.category}
                         price={finalPrice}
                         href={href}
-                        // se href inválido, força ficar na página (não navega)
                         target={href === "#" ? "_self" : isMobileLike() ? "_self" : "_blank"}
                         disabled={href === "#"}
                       />
@@ -342,9 +345,7 @@ export default function ProductPage() {
                         onClick={() => setShowOtherStores((v) => !v)}
                       >
                         <span>Outras lojas</span>
-                        <span className="text-xs text-muted-foreground">
-                          {showOtherStores ? "Ocultar" : `Ver ${secondaryOffers.length}`}
-                        </span>
+                        <span className="text-xs text-muted-foreground">{showOtherStores ? "Ocultar" : `Ver ${secondaryOffers.length}`}</span>
                       </button>
 
                       {showOtherStores && (
@@ -400,8 +401,7 @@ export default function ProductPage() {
               <div className="bg-muted rounded-xl p-4 flex gap-3 items-start">
                 <AlertCircle className="h-4 w-4 text-muted-foreground flex-shrink-0 mt-0.5" />
                 <p className="text-xs text-muted-foreground leading-relaxed">
-                  Este link é de afiliado. Ao comprar através dele, você nos ajuda a continuar trazendo ofertas incríveis, sem
-                  custo adicional.
+                  Este link é de afiliado. Ao comprar através dele, você nos ajuda a continuar trazendo ofertas incríveis, sem custo adicional.
                 </p>
               </div>
             </div>

@@ -1,19 +1,29 @@
-import { useState, useEffect, useRef } from 'react'
-import { useForm, Controller } from 'react-hook-form'
-import { zodResolver } from '@hookform/resolvers/zod'
-import { z } from 'zod'
-import { Button } from '@/components/ui/button'
-import { Input } from '@/components/ui/input'
-import { Textarea } from '@/components/ui/textarea'
-import { Label } from '@/components/ui/label'
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
-import { useCreateProduct, useUpdateProduct } from '@/hooks/useProducts'
-import { useBrands } from '@/hooks/useBrands'
-import { useToast } from '@/hooks/use-toast'
-import { CATEGORY_LABELS, type Product, type ProductCategory } from '@/types/product'
-import { Loader2 } from 'lucide-react'
-import BrandFormModal from '@/components/admin/BrandFormModal'
-import { getSupabase } from '@/integrations/supabase/client'
+import { useState, useEffect, useRef } from "react"
+import { useForm, Controller } from "react-hook-form"
+import { zodResolver } from "@hookform/resolvers/zod"
+import { z } from "zod"
+import { Button } from "@/components/ui/button"
+import { Input } from "@/components/ui/input"
+import { Textarea } from "@/components/ui/textarea"
+import { Label } from "@/components/ui/label"
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
+import { useCreateProduct, useUpdateProduct } from "@/hooks/useProducts"
+import { useBrands } from "@/hooks/useBrands"
+import { useToast } from "@/hooks/use-toast"
+import { CATEGORY_LABELS, type Product, type ProductCategory } from "@/types/product"
+import { Loader2 } from "lucide-react"
+import BrandFormModal from "@/components/admin/BrandFormModal"
+import { getSupabase } from "@/integrations/supabase/client"
+
+/**
+ * ✅ IMPORTANTE (produção)
+ * - Este ProductForm mantém o campo "URL do Produto (opcional)" (source_url),
+ *   mas ele NÃO deve quebrar seu admin mesmo que a coluna ainda não exista no banco,
+ *   porque o hook useCreateProduct/useUpdateProduct que te passei já faz payload defensivo
+ *   e IGNORA campos extras.
+ *
+ * - Quando você criar a coluna no Supabase, aí sim você pode passar a persistir source_url.
+ */
 
 const SUBCATEGORY_OPTIONS: Record<string, { value: string; label: string; keywords: string[] }[]> = {
   beleza: [
@@ -73,10 +83,8 @@ const SUBCATEGORY_OPTIONS: Record<string, { value: string; label: string; keywor
   ],
 }
 
-const emptyToNull = (v: unknown) =>
-  typeof v === "string" && v.trim() === "" ? null : v
+const emptyToNull = (v: unknown) => (typeof v === "string" && v.trim() === "" ? null : v)
 
-// ✅ deixa number vazio virar null (e evita NaN travando o submit)
 const emptyNumberToNull = (v: unknown) => {
   if (v === "" || v === undefined || v === null) return null
 
@@ -86,45 +94,40 @@ const emptyNumberToNull = (v: unknown) => {
     return Number.isFinite(n) ? n : null
   }
 
-  return Number.isFinite(v as number) ? v : null
+  return Number.isFinite(v as number) ? (v as number) : null
 }
 
-
-// ✅ resolve category_id a partir do slug (protege contra "all")
 async function resolveCategoryIdBySlug(categorySlug: string) {
   const supabase = getSupabase()
 
   if (!categorySlug || categorySlug === "all") return null
 
-  const { data, error } = await supabase
-    .from("categories")
-    .select("id")
-    .eq("slug", categorySlug)
-    .maybeSingle()
-
+  const { data, error } = await supabase.from("categories").select("id").eq("slug", categorySlug).maybeSingle()
   if (error) throw error
+
   return data?.id ?? null
 }
 
 const productSchema = z.object({
-  name: z.string().min(1),
-  slug: z.string().min(1),
+  name: z.string().min(1, "Nome é obrigatório"),
+  slug: z.string().min(1, "Slug é obrigatório"),
 
-  // ✅ impede "all" e obriga selecionar algo válido
   category: z.string().min(1).refine((v) => v !== "all", {
     message: 'Categoria inválida ("all")',
   }),
 
-  brand_slug: z.string().min(1),
+  brand_slug: z.string().min(1, "Marca é obrigatória"),
 
   subcategory: z.preprocess(emptyToNull, z.string().nullable().optional()),
   description: z.preprocess(emptyToNull, z.string().nullable().optional()),
   benefits: z.preprocess(emptyToNull, z.string().nullable().optional()),
 
-  price_label: z.string().min(1),
+  price_label: z.string().min(1, "Preço (label) é obrigatório"),
   image_urls: z.preprocess(emptyToNull, z.string().nullable().optional()),
 
-  // ✅ CORRIGIDO
+  // ✅ URL principal do produto (opcional)
+  source_url: z.preprocess(emptyToNull, z.string().url().nullable().optional()),
+
   shopee_price: z.preprocess(emptyNumberToNull, z.number().nullable().optional()),
   mercadolivre_price: z.preprocess(emptyNumberToNull, z.number().nullable().optional()),
   amazon_price: z.preprocess(emptyNumberToNull, z.number().nullable().optional()),
@@ -133,7 +136,6 @@ const productSchema = z.object({
   mercadolivre_link: z.preprocess(emptyToNull, z.string().url().nullable().optional()),
   amazon_link: z.preprocess(emptyToNull, z.string().url().nullable().optional()),
 
-  // ✅ Review
   review_url: z.preprocess(emptyToNull, z.string().url().nullable().optional()),
 })
 
@@ -164,6 +166,7 @@ export function ProductForm({ product, onSuccess }: Props) {
       benefits: "",
       image_urls: "",
       price_label: "",
+      source_url: "",
       shopee_link: "",
       mercadolivre_link: "",
       amazon_link: "",
@@ -178,34 +181,28 @@ export function ProductForm({ product, onSuccess }: Props) {
     if (!product) return
 
     reset({
-      name: product.name ?? "",
-      slug: product.slug ?? "",
-
-      // ✅ mais tolerante (se vier category.slug do select com join)
-      category:
-        (product as any)?.category?.slug ??
-        (product as any)?.category_slug ??
-        (product as any)?.category ??
-        "",
-
-      brand_slug: product.brand_slug ?? "generico",
-      description: product.description ?? "",
-      benefits: product.benefits?.join('\n') ?? "",
-      image_urls: product.image_urls?.join('\n') ?? "",
-      price_label: product.price_label ?? "",
-      subcategory: product.subcategory ?? "",
-      shopee_link: product.shopee_link ?? "",
-      mercadolivre_link: product.mercadolivre_link ?? "",
-      amazon_link: product.amazon_link ?? "",
-      shopee_price: product.shopee_price ?? null,
-      mercadolivre_price: product.mercadolivre_price ?? null,
-      amazon_price: product.amazon_price ?? null,
-      review_url: (product as any).review_url ?? "",
+      name: (product as any)?.name ?? "",
+      slug: (product as any)?.slug ?? "",
+      category: (product as any)?.category?.slug ?? (product as any)?.category_slug ?? (product as any)?.category ?? "",
+      brand_slug: (product as any)?.brand_slug ?? "generico",
+      description: (product as any)?.description ?? "",
+      benefits: Array.isArray((product as any)?.benefits) ? (product as any).benefits.join("\n") : "",
+      image_urls: Array.isArray((product as any)?.image_urls) ? (product as any).image_urls.join("\n") : "",
+      price_label: (product as any)?.price_label ?? "",
+      subcategory: (product as any)?.subcategory ?? "",
+      source_url: (product as any)?.source_url ?? (product as any)?.url ?? "",
+      shopee_link: (product as any)?.shopee_link ?? "",
+      mercadolivre_link: (product as any)?.mercadolivre_link ?? "",
+      amazon_link: (product as any)?.amazon_link ?? "",
+      shopee_price: (product as any)?.shopee_price ?? null,
+      mercadolivre_price: (product as any)?.mercadolivre_price ?? null,
+      amazon_price: (product as any)?.amazon_price ?? null,
+      review_url: (product as any)?.review_url ?? "",
     })
   }, [product, reset])
 
-  const category = watch('category') || ""
-  const name = watch('name')
+  const category = watch("category") || ""
+  const name = watch("name")
   const { data: brands, refetch } = useBrands(category)
 
   const normalize = (text: string) =>
@@ -213,60 +210,76 @@ export function ProductForm({ product, onSuccess }: Props) {
 
   const handleNameChange = (value: string) => {
     if (!product) {
-      const slug = normalize(value).replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '')
-      setValue('slug', slug)
+      const slug = normalize(value)
+        .replace(/[^a-z0-9]+/g, "-")
+        .replace(/^-|-$/g, "")
+      setValue("slug", slug)
     }
   }
 
   const onSubmit = async (data: ProductFormData) => {
     setIsSubmitting(true)
+
     try {
       const resolvedCategoryId = await resolveCategoryIdBySlug(data.category)
 
       const categoryId =
-        resolvedCategoryId ??
-        (product as any)?.category_id ??
-        (product as any)?.categoryId ??
-        null
+        resolvedCategoryId ?? (product as any)?.category_id ?? (product as any)?.categoryId ?? null
 
       if (!categoryId) {
         toast({
           variant: "destructive",
-          title: "Campos inválidos",
-          description: "Verifique os preços e URLs preenchidos."
+          title: "Categoria inválida",
+          description: "Selecione uma categoria válida.",
         })
         return
       }
 
-      const productData = {
+      // ✅ Split/normalize arrays
+      const benefitsArr = data.benefits
+        ? data.benefits.split("\n").map((b) => b.trim()).filter(Boolean)
+        : []
+
+      const imagesArr = data.image_urls
+        ? data.image_urls.split("\n").map((i) => i.trim()).filter(Boolean)
+        : []
+
+      /**
+       * ✅ IMPORTANTE:
+       * - Nós NÃO dependemos do banco ter source_url.
+       * - O hook useCreateProduct/useUpdateProduct é que decide o que vai para o payload do Supabase.
+       * - Aqui mantemos `source_url` no objeto por consistência (e para quando você criar a coluna).
+       */
+      const productData: any = {
         ...data,
 
-        // ✅ essencial para o NOT NULL do banco
         category_id: categoryId,
-
-        // mantém compatibilidade com seu tipo local (opcional)
         category: data.category as ProductCategory,
 
-        benefits: data.benefits ? data.benefits.split('\n').map(b => b.trim()).filter(Boolean) : [],
-        image_urls: data.image_urls ? data.image_urls.split('\n').map(i => i.trim()).filter(Boolean) : [],
+        benefits: benefitsArr,
+        image_urls: imagesArr,
         is_active: true,
 
-        // garante null quando vazio (schema já faz, mas aqui mantém explícito)
+        // garante null quando vazio
+        source_url: data.source_url ?? null,
         review_url: data.review_url ?? null,
         shopee_price: data.shopee_price ?? null,
         mercadolivre_price: data.mercadolivre_price ?? null,
         amazon_price: data.amazon_price ?? null,
       }
 
-      if (product) await updateProduct.mutateAsync({ id: product.id, ...productData })
-      else await createProduct.mutateAsync(productData)
+      if (product) {
+        await updateProduct.mutateAsync({ id: (product as any).id, ...productData })
+      } else {
+        await createProduct.mutateAsync(productData)
+      }
 
-      toast({ title: product ? 'Produto atualizado!' : 'Produto criado!' })
+      toast({ title: product ? "Produto atualizado!" : "Produto criado!" })
       reset()
       onSuccess?.()
     } catch (err) {
       console.error(err)
-      toast({ variant: 'destructive', title: 'Erro ao salvar' })
+      toast({ variant: "destructive", title: "Erro ao salvar" })
     } finally {
       setIsSubmitting(false)
     }
@@ -286,50 +299,62 @@ export function ProductForm({ product, onSuccess }: Props) {
 
   useEffect(() => {
     if (!name || !category || !SUBCATEGORY_OPTIONS[category]) return
-    const normalized = name.toLowerCase()
-    const match = SUBCATEGORY_OPTIONS[category].find(sub =>
-      sub.keywords.some(k => normalized.includes(k))
+    const normalizedName = name.toLowerCase()
+    const match = SUBCATEGORY_OPTIONS[category].find((sub) =>
+      sub.keywords.some((k) => normalizedName.includes(k)),
     )
     if (match) setValue("subcategory", match.value)
   }, [name, category, setValue])
 
-  const nameField = register("name")
-
   return (
     <>
       <form
-        onSubmit={handleSubmit(
-          onSubmit,
-          (errors) => {
-            console.log("❌ Erros de validação do ProductForm:", errors)
-            toast({
-              variant: "destructive",
-              title: "Verifique os campos obrigatórios",
-              description: "Abra o console para ver quais campos estão inválidos.",
-            })
-          }
-        )}
+        onSubmit={handleSubmit(onSubmit, (errors) => {
+          console.log("❌ Erros de validação do ProductForm:", errors)
+          toast({
+            variant: "destructive",
+            title: "Verifique os campos obrigatórios",
+            description: "Abra o console para ver quais campos estão inválidos.",
+          })
+        })}
         className="space-y-6"
       >
+        <Input
+          {...register("name", {
+            onChange: (e) => handleNameChange((e.target as HTMLInputElement).value),
+          })}
+          placeholder="Nome do produto"
+        />
 
-        <Input {...register('slug')} placeholder="Slug" />
+        <Input {...register("slug")} placeholder="Slug" />
+
+        <div className="space-y-2">
+          <Label>URL do Produto (opcional)</Label>
+          <Input type="url" {...register("source_url")} placeholder="https://..." />
+          <p className="text-xs text-muted-foreground">
+            Opcional. Use para referência/SEO ou fonte do produto (não é o link de afiliado).
+          </p>
+        </div>
 
         <Controller
           name="category"
           control={control}
           render={({ field }) => (
             <Select value={field.value || ""} onValueChange={field.onChange}>
-              <SelectTrigger><SelectValue placeholder="Categoria" /></SelectTrigger>
+              <SelectTrigger>
+                <SelectValue placeholder="Categoria" />
+              </SelectTrigger>
               <SelectContent>
                 {Object.entries(CATEGORY_LABELS).map(([key, label]) => (
-                  <SelectItem key={key} value={key}>{label}</SelectItem>
+                  <SelectItem key={key} value={key}>
+                    {label}
+                  </SelectItem>
                 ))}
               </SelectContent>
             </Select>
           )}
         />
 
-        {/* ✅ SUBCATEGORIA (voltou para cadastro e edição) */}
         {category && SUBCATEGORY_OPTIONS[category] && (
           <div className="space-y-2">
             <Label>Subcategoria</Label>
@@ -342,7 +367,6 @@ export function ProductForm({ product, onSuccess }: Props) {
                   <SelectTrigger>
                     <SelectValue placeholder="Selecione uma subcategoria" />
                   </SelectTrigger>
-
                   <SelectContent>
                     {SUBCATEGORY_OPTIONS[category].map((sub) => (
                       <SelectItem key={sub.value} value={sub.value}>
@@ -367,7 +391,9 @@ export function ProductForm({ product, onSuccess }: Props) {
           control={control}
           render={({ field }) => (
             <Select value={field.value || "generico"} onValueChange={field.onChange}>
-              <SelectTrigger><SelectValue placeholder="Marca" /></SelectTrigger>
+              <SelectTrigger>
+                <SelectValue placeholder="Marca" />
+              </SelectTrigger>
               <SelectContent>
                 <SelectItem value="generico">Genérico</SelectItem>
 
@@ -393,37 +419,37 @@ export function ProductForm({ product, onSuccess }: Props) {
           )}
         />
 
-        <Textarea {...register('description')} placeholder="Descrição" />
-        <Textarea {...register('benefits')} placeholder="Benefícios (1 por linha)" />
-        <Input {...register('price_label')} placeholder="R$ 89,90" />
+        <Textarea {...register("description")} placeholder="Descrição" />
+        <Textarea {...register("benefits")} placeholder="Benefícios (1 por linha)" />
+        <Input {...register("price_label")} placeholder="R$ 89,90" />
 
         <Label>URLs das imagens (1 por linha)</Label>
-        <Textarea {...register('image_urls')} rows={3} />
+        <Textarea {...register("image_urls")} rows={3} />
 
         <div className="space-y-4">
           <h2 className="font-semibold">Links de Afiliado</h2>
 
-          <Input {...register('shopee_link')} placeholder="Link Shopee" />
+          <Input {...register("shopee_link")} placeholder="Link Shopee" />
           <Input
             type="number"
             step="0.01"
-            {...register('shopee_price', { setValueAs: (v) => (v === "" ? null : Number(v)) })}
+            {...register("shopee_price", { setValueAs: (v) => (v === "" ? null : Number(v)) })}
             placeholder="Preço Shopee"
           />
 
-          <Input {...register('mercadolivre_link')} placeholder="Link Mercado Livre" />
+          <Input {...register("mercadolivre_link")} placeholder="Link Mercado Livre" />
           <Input
             type="number"
             step="0.01"
-            {...register('mercadolivre_price', { setValueAs: (v) => (v === "" ? null : Number(v)) })}
+            {...register("mercadolivre_price", { setValueAs: (v) => (v === "" ? null : Number(v)) })}
             placeholder="Preço Mercado Livre"
           />
 
-          <Input {...register('amazon_link')} placeholder="Link Amazon" />
+          <Input {...register("amazon_link")} placeholder="Link Amazon" />
           <Input
             type="number"
             step="0.01"
-            {...register('amazon_price', { setValueAs: (v) => (v === "" ? null : Number(v)) })}
+            {...register("amazon_price", { setValueAs: (v) => (v === "" ? null : Number(v)) })}
             placeholder="Preço Amazon"
           />
         </div>
@@ -441,7 +467,7 @@ export function ProductForm({ product, onSuccess }: Props) {
         </div>
 
         <Button type="submit" className="w-full" disabled={isSubmitting}>
-          {isSubmitting ? <Loader2 className="animate-spin" /> : product ? 'Atualizar Produto' : 'Criar Produto'}
+          {isSubmitting ? <Loader2 className="animate-spin" /> : product ? "Atualizar Produto" : "Criar Produto"}
         </Button>
       </form>
 

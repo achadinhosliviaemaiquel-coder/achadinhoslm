@@ -40,7 +40,7 @@ function ChannelButton({ href, bg, children }: {
 }
 
 export default function Index() {
-  const { data: products, isLoading } = useFeaturedProducts()
+  const { data: products, isLoading } = useFeaturedProducts(6)
 
   return (
     <Layout>
@@ -97,7 +97,10 @@ export default function Index() {
 
         {/* MAIS VISTOS */}
         <section className="space-y-4">
-          <h2 className="text-lg font-semibold text-foreground">🔥 Mais vistos</h2>
+          <h2 className="text-lg font-semibold text-foreground">🔥 Em alta</h2>
+          <p className="text-sm text-muted-foreground">
+            Produtos que mais geraram cliques para comprar nos últimos 7 dias.
+          </p>
 
           {isLoading ? (
             <div className="flex gap-4 overflow-hidden">
@@ -131,7 +134,9 @@ export default function Index() {
           ) : (
             <div className="text-center py-12 space-y-4">
               <span className="text-4xl">📦</span>
-              <p className="text-muted-foreground">Nenhum produto em destaque ainda.</p>
+              <p className="text-muted-foreground">
+                Ainda estamos coletando dados de cliques. Enquanto isso, explore as categorias acima 👆
+              </p>
             </div>
           )}
         </section>
