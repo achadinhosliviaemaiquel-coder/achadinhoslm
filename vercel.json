@@ -1,0 +1,19 @@
+{
+  "crons": [
+    { "path": "/api/cron/ml-resolve-sec", "schedule": "30 5 * * *" },
+    { "path": "/api/cron/ml-prices", "schedule": "0 6 * * *" }
+  ],
+  "functions": {
+    "api/**/*.ts": {
+      "maxDuration": 60
+    }
+  },
+  "routes": [
+    {
+      "src": "/api/cron/.*",
+      "headers": {
+        "x-vercel-protection-bypass": "true"
+      }
+    }
+  ]
+}

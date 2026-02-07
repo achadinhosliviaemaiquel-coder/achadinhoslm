@@ -8,10 +8,12 @@ import { useProduct } from "@/hooks/useProducts"
 import { trackProductView } from "@/lib/analytics"
 import { CATEGORY_LABELS } from "@/types/product"
 import { ChevronLeft, Check, AlertCircle } from "lucide-react"
-import { getLowestPrice, formatCurrency } from "@/lib/utils"
+import { formatCurrency } from "@/lib/utils"
 import { Helmet } from "react-helmet-async"
 import { useProductMetrics } from "@/hooks/useProductMetrics"
 import { StoreButton } from "@/components/StoreButton"
+import { useQuery } from "@tanstack/react-query"
+import { getSupabase } from "@/integrations/supabase/client"
 
 function parsePrice(label: string) {
   const value = (label || "").replace(/[^\d,]/g, "").replace(",", ".")
@@ -83,6 +85,35 @@ function unwrapNestedGoUrl(raw: string) {
   return current
 }
 
+type BestOfferRow = {
+  product_id: string
+  offer_id: number
+  platform: "mercadolivre" | "shopee" | "amazon"
+  url: string
+  external_id: string
+  priority_boost: number
+  price: number | null
+  currency: string | null
+  is_available: boolean
+  verified_at: string
+  verified_date: string
+}
+
+function getOrCreateSessionId() {
+  const sessionKey = "sid"
+  let sid = sessionStorage.getItem(sessionKey)
+
+  if (!sid) {
+    sid =
+      globalThis.crypto && "randomUUID" in globalThis.crypto
+        ? (globalThis.crypto as Crypto).randomUUID()
+        : `${Date.now()}-${Math.random().toString(16).slice(2)}`
+    sessionStorage.setItem(sessionKey, sid)
+  }
+
+  return sid
+}
+
 export default function ProductPage() {
   const { slug } = useParams<{ slug: string }>()
   const navigate = useNavigate()
@@ -101,19 +132,46 @@ export default function ProductPage() {
 
   const hasReview = !!product?.review_url
 
-  const offers = useMemo<Offer[]>(() => {
+  // ✅ Best offer (preço verificado + CTA primário automático)
+  const bestOfferQuery = useQuery({
+    queryKey: ["best-offer", product?.id],
+    enabled: !!product?.id,
+    queryFn: async (): Promise<BestOfferRow | null> => {
+      const supabase = getSupabase()
+
+      const { data, error } = await supabase
+        .from("v_product_best_offer")
+        .select(
+          "product_id, offer_id, platform, url, external_id, priority_boost, price, currency, is_available, verified_at, verified_date"
+        )
+        .eq("product_id", product!.id)
+        .maybeSingle()
+
+      if (error) throw error
+      return (data as BestOfferRow | null) ?? null
+    },
+  })
+
+  const bestOffer = bestOfferQuery.data ?? null
+
+  // ✅ Ofertas secundárias (mantém compatibilidade com os links atuais do product)
+  // - Primário: bestOffer (se existir)
+  // - Secundários: product.*_link (excluindo a loja primária se coincidir)
+  const secondaryOffers = useMemo<Offer[]>(() => {
     if (!product) return []
     const list: Offer[] = []
     if (product.amazon_link) list.push({ store: "amazon", label: "Comprar agora na Amazon", url: product.amazon_link, priority: 0 })
     if (product.mercadolivre_link)
       list.push({ store: "mercadolivre", label: "Comprar agora no Mercado Livre", url: product.mercadolivre_link, priority: 1 })
     if (product.shopee_link) list.push({ store: "shopee", label: "Comprar agora na Shopee", url: product.shopee_link, priority: 2 })
-    return list.sort((a, b) => a.priority - b.priority)
-  }, [product])
 
-  const primaryOffer = offers[0]
-  const secondaryOffers = offers.slice(1)
-  const hasStoreLinks = offers.length > 0
+    const primaryStore = bestOffer?.platform
+    const filtered = primaryStore ? list.filter((o) => o.store !== primaryStore) : list
+
+    return filtered.sort((a, b) => a.priority - b.priority)
+  }, [product, bestOffer?.platform])
+
+  const hasAnyOffers = !!bestOffer || secondaryOffers.length > 0
 
   const handleBack = () => {
     if (location.state?.from) navigate(location.state.from)
@@ -125,6 +183,7 @@ export default function ProductPage() {
     return /Android|iPhone|iPad|iPod/i.test(navigator.userAgent)
   }
 
+  // ✅ Mantém o builder legado para ofertas secundárias (url-based)
   const buildGoUrl = (offer: Offer) => {
     if (!product) return "#"
 
@@ -135,10 +194,12 @@ export default function ProductPage() {
       return "#"
     }
 
+    const sid = getOrCreateSessionId()
     const params = new URLSearchParams({
       url: finalUrl,
       product_id: product.id,
       store: offer.store,
+      session_id: sid,
     })
 
     return `/api/go?${params.toString()}`
@@ -153,16 +214,7 @@ export default function ProductPage() {
   useEffect(() => {
     if (!product?.id) return
 
-    const sessionKey = "sid"
-    let sid = sessionStorage.getItem(sessionKey)
-
-    if (!sid) {
-      sid =
-        globalThis.crypto && "randomUUID" in globalThis.crypto
-          ? (globalThis.crypto as Crypto).randomUUID()
-          : `${Date.now()}-${Math.random().toString(16).slice(2)}`
-      sessionStorage.setItem(sessionKey, sid)
-    }
+    const sid = getOrCreateSessionId()
 
     // throttle curto por produto (não é dedupe): evita múltiplos hits em poucos segundos
     const throttleKey = `view:throttle:${product.id}`
@@ -171,10 +223,10 @@ export default function ProductPage() {
     if (Number.isFinite(last) && now - last < 10_000) return
     sessionStorage.setItem(throttleKey, String(now))
 
-    void fetch(
-      `/api/view?product_id=${encodeURIComponent(product.id)}&session_id=${encodeURIComponent(sid)}`,
-      { method: "GET", keepalive: true }
-    )
+    void fetch(`/api/view?product_id=${encodeURIComponent(product.id)}&session_id=${encodeURIComponent(sid)}`, {
+      method: "GET",
+      keepalive: true,
+    })
   }, [product?.id])
 
   // (Opcional) tracking “client analytics” separado (GA/etc)
@@ -210,9 +262,12 @@ export default function ProductPage() {
     )
   }
 
-  const lowestPrice = getLowestPrice(product)
+  // ✅ Preço: prioriza o verificado (bestOffer.price), fallback para label manual
   const manualPrice = parsePrice(product.price_label)
-  const finalPrice = lowestPrice && !isNaN(manualPrice) ? Math.min(lowestPrice, manualPrice) : manualPrice
+  const finalPrice = bestOffer?.price ?? (Number.isFinite(manualPrice) ? manualPrice : NaN)
+
+  const today = new Date().toISOString().slice(0, 10)
+  const verifiedToday = bestOffer?.verified_date === today
 
   /**
    * ✅ URGÊNCIA: só quando existe motivo.
@@ -227,6 +282,18 @@ export default function ProductPage() {
    * ✅ “Sinais do produto” só aparece se existir sinal real
    */
   const shouldShowSignalsCard = Boolean(showTrending || hasReview || urgencyText)
+
+  // ✅ CTA primário: passa session_id também (para fechar funil)
+  const primaryGoHref = bestOffer
+    ? (() => {
+        const sid = getOrCreateSessionId()
+        const params = new URLSearchParams({
+          offer_id: String(bestOffer.offer_id),
+          session_id: sid,
+        })
+        return `/api/go?${params.toString()}`
+      })()
+    : ""
 
   return (
     <Layout
@@ -281,8 +348,13 @@ export default function ProductPage() {
               <h1 className="text-xl lg:text-2xl font-semibold leading-tight">{product.name}</h1>
 
               <div className="flex items-end gap-3">
-                <span className="text-2xl font-bold text-emerald-700">{formatCurrency(finalPrice)}</span>
-                <span className="text-xs text-muted-foreground">preço verificado • pode mudar</span>
+                <span className="text-2xl font-bold text-emerald-700">
+                  {Number.isFinite(finalPrice) ? formatCurrency(finalPrice) : "Consulte o preço"}
+                </span>
+
+                <span className="text-xs text-muted-foreground">
+                  {bestOffer ? (verifiedToday ? "preço verificado hoje" : `preço verificado em ${bestOffer.verified_date}`) : "preço pode variar"}
+                </span>
               </div>
 
               {!shouldShowSignalsCard && (
@@ -319,24 +391,22 @@ export default function ProductPage() {
                 </div>
               )}
 
-              {hasStoreLinks && primaryOffer && (
+              {hasAnyOffers && (
                 <div className="space-y-3">
-                  {(() => {
-                    const href = buildGoUrl(primaryOffer)
-                    return (
-                      <StoreButton
-                        store={primaryOffer.store}
-                        productId={product.id}
-                        productSlug={product.slug}
-                        category={product.category}
-                        price={finalPrice}
-                        href={href}
-                        target={href === "#" ? "_self" : isMobileLike() ? "_self" : "_blank"}
-                        disabled={href === "#"}
-                      />
-                    )
-                  })()}
+                  {/* ✅ CTA primário: bestOffer (verificado) → /api/go?offer_id=...&session_id=... */}
+                  {bestOffer ? (
+                    <StoreButton
+                      store={bestOffer.platform}
+                      productId={product.id}
+                      productSlug={product.slug}
+                      category={product.category}
+                      price={Number.isFinite(finalPrice) ? finalPrice : undefined}
+                      href={primaryGoHref}
+                      target={isMobileLike() ? "_self" : "_blank"}
+                    />
+                  ) : null}
 
+                  {/* ✅ Secundários: links legados do produto (se existirem) */}
                   {secondaryOffers.length > 0 && (
                     <div className="rounded-2xl border border-black/10 p-4">
                       <button
@@ -345,7 +415,9 @@ export default function ProductPage() {
                         onClick={() => setShowOtherStores((v) => !v)}
                       >
                         <span>Outras lojas</span>
-                        <span className="text-xs text-muted-foreground">{showOtherStores ? "Ocultar" : `Ver ${secondaryOffers.length}`}</span>
+                        <span className="text-xs text-muted-foreground">
+                          {showOtherStores ? "Ocultar" : `Ver ${secondaryOffers.length}`}
+                        </span>
                       </button>
 
                       {showOtherStores && (
@@ -359,7 +431,7 @@ export default function ProductPage() {
                                 productId={product.id}
                                 productSlug={product.slug}
                                 category={product.category}
-                                price={finalPrice}
+                                price={Number.isFinite(finalPrice) ? finalPrice : undefined}
                                 href={href}
                                 target={href === "#" ? "_self" : isMobileLike() ? "_self" : "_blank"}
                                 className="min-h-[48px] rounded-2xl text-sm"
@@ -370,6 +442,11 @@ export default function ProductPage() {
                         </div>
                       )}
                     </div>
+                  )}
+
+                  {/* feedback leve enquanto bestOffer carrega */}
+                  {bestOfferQuery.isLoading && (
+                    <p className="text-xs text-muted-foreground leading-relaxed">Verificando preço e disponibilidade…</p>
                   )}
                 </div>
               )}

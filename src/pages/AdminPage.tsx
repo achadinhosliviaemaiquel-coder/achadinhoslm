@@ -87,8 +87,8 @@ export default function AdminPage() {
             </a>
           </Button>
           <Button asChild variant="secondary" className="justify-start gap-2">
-            <a href="https://app.netlify.com" target="_blank" rel="noreferrer">
-              <Rocket className="h-4 w-4" /> Netlify
+            <a href="https://vercel.com" target="_blank" rel="noreferrer">
+              <Rocket className="h-4 w-4" /> Vercel
             </a>
           </Button>
           <Button asChild variant="secondary" className="justify-start gap-2">
