@@ -1,4 +1,4 @@
-import "dotenv/config";
+// ml-prices.ts
 import type { VercelRequest, VercelResponse } from "@vercel/node";
 import { createClient } from "@supabase/supabase-js";
 import crypto from "crypto";
@@ -25,7 +25,7 @@ type JobCounters = {
   unavailableDeactivated: number;
   missingSecUrlSkipped: number;
   invalidExternalIdSkipped: number;
-  cookieMissingOrExpired: number; // aqui significa gate/captcha/login
+  cookieMissingOrExpired: number; // gate/captcha/login
   priceNotFound: number;
 };
 
@@ -41,7 +41,10 @@ const BOT_FAILFAST_THRESHOLD = Number(
   process.env.ML_PRICE_BOT_FAILFAST_THRESHOLD || "8",
 );
 
+// ✅ Local/dev fallback (não usar em produção)
 const COOKIE_FILE = process.env.ML_COOKIE_FILE || "./ml-cookie.json";
+// ✅ Produção (Vercel): base64 do JSON do cookie (ex: {"cookie":"a=b; c=d"})
+const COOKIE_B64 = process.env.ML_COOKIE_B64 || "";
 
 // ✅ valida cookie em /p/ (mais estável que homepage)
 const COOKIE_TEST_URL =
@@ -51,6 +54,8 @@ const COOKIE_TEST_URL =
 // jitter default (ms)
 const JITTER_MIN_MS = Number(process.env.ML_JITTER_MIN_MS || "120");
 const JITTER_MAX_MS = Number(process.env.ML_JITTER_MAX_MS || "420");
+
+const FETCH_TIMEOUT_MS = Number(process.env.ML_FETCH_TIMEOUT_MS || "25000");
 
 function utcDateString(d = new Date()) {
   const y = d.getUTCFullYear();
@@ -98,6 +103,23 @@ function readHeader(req: VercelRequest, name: string): string {
   return (v as string | undefined) ?? "";
 }
 
+function readCronSecret(req: VercelRequest): string {
+  // Prefer header, fallback query (?cron_secret=...)
+  const h = readHeader(req, "x-cron-secret");
+  if (h) return h;
+
+  try {
+    const host = readHeader(req, "x-forwarded-host") || readHeader(req, "host");
+    const proto =
+      readHeader(req, "x-forwarded-proto") ||
+      (host?.includes("localhost") ? "http" : "https");
+    const url = new URL(req.url || "/", `${proto}://${host || "localhost"}`);
+    return url.searchParams.get("cron_secret") || "";
+  } catch {
+    return "";
+  }
+}
+
 async function runPool<T>(
   items: T[],
   concurrency: number,
@@ -132,11 +154,35 @@ function normalizeCookieHeader(cookie: string) {
   return s;
 }
 
-function readCookieFromFile(): string {
+function readCookieFromEnvOrFile(): { cookie: string; source: "b64" | "file" } {
+  // 1) Produção: ML_COOKIE_B64 -> JSON -> cookie
+  if (COOKIE_B64) {
+    let parsed: any;
+    try {
+      const jsonStr = Buffer.from(COOKIE_B64, "base64").toString("utf8");
+      parsed = JSON.parse(jsonStr);
+    } catch (e: any) {
+      throw new Error(`ML_COOKIE_B64 invalid base64/json: ${e?.message || e}`);
+    }
+
+    let cookie = typeof parsed.cookie === "string" ? parsed.cookie : "";
+
+    // ou cookie em base64 dentro do JSON
+    if (!cookie && typeof parsed.cookie_base64 === "string") {
+      cookie = Buffer.from(parsed.cookie_base64, "base64").toString("utf8");
+    }
+
+    cookie = normalizeCookieHeader(cookie || "");
+    if (!cookie) throw new Error("ML_COOKIE_B64 provided but cookie is empty");
+
+    return { cookie, source: "b64" };
+  }
+
+  // 2) Local/dev: arquivo
   const p = path.resolve(process.cwd(), COOKIE_FILE);
   if (!fs.existsSync(p)) throw new Error(`ML_COOKIE_FILE not found: ${p}`);
 
-  // ✅ remove BOM caso editor salve com BOM
+  // remove BOM caso editor salve com BOM
   const raw = fs.readFileSync(p, "utf8").replace(/^\uFEFF/, "");
 
   let json: any;
@@ -146,7 +192,6 @@ function readCookieFromFile(): string {
     throw new Error(`ML_COOKIE_FILE invalid JSON: ${e?.message || e}`);
   }
 
-  // aceita cookie direto
   let cookie = typeof json.cookie === "string" ? json.cookie : "";
 
   // ou cookie em base64
@@ -157,7 +202,7 @@ function readCookieFromFile(): string {
   cookie = normalizeCookieHeader(cookie || "");
   if (!cookie) throw new Error("ML_COOKIE_FILE exists but cookie is empty");
 
-  return cookie;
+  return { cookie, source: "file" };
 }
 
 function buildBrowserHeaders(cookie: string) {
@@ -171,7 +216,7 @@ function buildBrowserHeaders(cookie: string) {
     dnt: "1",
     referer: "https://www.mercadolivre.com.br/",
 
-    // ✅ ajuda contra WAFs (fingerprint básico)
+    // fingerprint básico
     "sec-fetch-site": "same-origin",
     "sec-fetch-mode": "navigate",
     "sec-fetch-dest": "document",
@@ -188,7 +233,7 @@ function buildBrowserHeaders(cookie: string) {
 }
 
 /**
- * ⚠️ "Gate" real (captcha/login/WAF) vs falso positivo.
+ * Gate real (captcha/login/WAF) vs falso positivo.
  * Homepage pode conter strings "captcha" em scripts: valida cookie em /p/ e usa heurística mais dura.
  */
 function isHardGate(html: string, finalUrl: string) {
@@ -219,12 +264,16 @@ function looksLikeRealMlPage(html: string) {
   );
 }
 
+function shortTitle(html: string) {
+  const m = html.match(/<title[^>]*>([\s\S]*?)<\/title>/i);
+  const t = m?.[1]?.replace(/\s+/g, " ").trim();
+  return t ? t.slice(0, 140) : null;
+}
+
 async function validateCookie(cookie: string, log: (s: string) => void) {
   const testUrl = COOKIE_TEST_URL;
-
   log(`Validating cookie using testUrl=${testUrl}`);
 
-  // pequeno jitter antes do teste
   await jitter();
 
   const res = await fetch(testUrl, {
@@ -241,14 +290,12 @@ async function validateCookie(cookie: string, log: (s: string) => void) {
   const title = shortTitle(html);
 
   if (!res.ok) {
-    // não conclui cookie inválido só por HTTP != 200
     log(
       `Cookie validation HTTP ${res.status} title=${title ?? "n/a"} finalUrl=${finalUrl}`,
     );
     return;
   }
 
-  // se for gate "hard" e não parecer página real, aí sim invalidar
   if (isHardGate(html, finalUrl) && !looksLikeRealMlPage(html)) {
     log(
       `Cookie validation HARD-GATE title=${title ?? "n/a"} finalUrl=${finalUrl}`,
@@ -260,8 +307,6 @@ async function validateCookie(cookie: string, log: (s: string) => void) {
 
   log(`Cookie validation OK title=${title ?? "n/a"} finalUrl=${finalUrl}`);
 }
-
-const FETCH_TIMEOUT_MS = Number(process.env.ML_FETCH_TIMEOUT_MS || "25000");
 
 async function fetchWithRetryHtml(
   url: string,
@@ -661,10 +706,9 @@ function cleanMlUrl(input: string): string | null {
 
 /**
  * ✅ tenta múltiplos formatos que o ML usa
- * Ajuste importante:
- * - Para MLB (item/anúncio), prioriza MLB-<digits> (produto.mercadolivre.com.br e mercadolivre.com.br)
+ * - MLB: prioriza MLB-<digits> (produto.mercadolivre.com.br e mercadolivre.com.br)
  * - /p/ pode funcionar (catálogo), mas nem sempre existe
- * - /up/ é útil mais para MLBU; para MLB geralmente é ruído
+ * - /up/ é útil mais para MLBU
  */
 function mlCandidateUrls(externalId: string) {
   const parsed = parseMlExternalId(externalId);
@@ -675,30 +719,18 @@ function mlCandidateUrls(externalId: string) {
   const urls: string[] = [];
 
   if (prefix === "MLB") {
-    // ✅ melhor chance para MLB longos
     urls.push(`https://produto.mercadolivre.com.br/MLB-${digits}`);
     urls.push(`https://www.mercadolivre.com.br/MLB-${digits}`);
-
-    // catálogo (quando existir)
     urls.push(`https://www.mercadolivre.com.br/p/${raw}`);
-
-    // fallback
     urls.push(`https://www.mercadolivre.com.br/${raw}`);
   } else {
-    // MLBU (quando você tiver): /up/ costuma ser mais relevante
     urls.push(`https://www.mercadolivre.com.br/up/${raw}`);
     urls.push(`https://www.mercadolivre.com.br/p/${raw}`);
-    urls.push(`https://produto.mercadolivre.com.br/${raw}-${digits}`); // fallback defensivo
+    urls.push(`https://produto.mercadolivre.com.br/${raw}-${digits}`);
     urls.push(`https://www.mercadolivre.com.br/${raw}`);
   }
 
   return urls;
-}
-
-function shortTitle(html: string) {
-  const m = html.match(/<title[^>]*>([\s\S]*?)<\/title>/i);
-  const t = m?.[1]?.replace(/\s+/g, " ").trim();
-  return t ? t.slice(0, 140) : null;
 }
 
 function sha1(s: string) {
@@ -726,13 +758,17 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   };
 
   try {
-    const got = readHeader(req, "x-cron-secret");
-    if (got !== CRON_SECRET) {
+    const got = readCronSecret(req);
+    if (!got || got !== CRON_SECRET) {
       return res.status(401).json({ ok: false, error: "Unauthorized" });
     }
 
-    const cookie = readCookieFromFile();
-    log(`Cookie loaded from ML_COOKIE_FILE (${COOKIE_FILE})`);
+    const { cookie, source } = readCookieFromEnvOrFile();
+    log(
+      source === "b64"
+        ? `Cookie loaded from ML_COOKIE_B64 (env)`
+        : `Cookie loaded from ML_COOKIE_FILE (${COOKIE_FILE})`,
+    );
 
     await validateCookie(cookie, log);
 
@@ -765,7 +801,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           snapshotDate,
           batchSize: BATCH_SIZE,
           concurrency: MAX_CONCURRENCY,
-          mode: "html-cookie-file",
+          mode: source === "b64" ? "html-cookie-b64" : "html-cookie-file",
         },
       })
       .select("id")
@@ -782,7 +818,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const jobRunId = runRow.id;
     let lastErrorSample: string | null = null;
 
-    // (mantido; hoje não é usado no fluxo, mas pode ser útil depois)
+    // (mantido; hoje não é usado no fluxo)
     const { data: imports, error: impErr } = await supabase
       .from("ml_link_import")
       .select("product_id, sec_url");
@@ -827,7 +863,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           const parsed = parseMlExternalId(externalId);
           if (!parsed) return;
 
-          const label = parsed.raw; // MLBxxxx / MLBUxxxx
+          const label = parsed.raw;
 
           const urlRaw = offer.url?.trim() || null;
           const urlClean = urlRaw ? cleanMlUrl(urlRaw) : null;
@@ -848,7 +884,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             return true;
           });
 
-          // log útil p/ debugar os 7 que ficam null
           log(`Candidates id=${offer.id} ext=${label} count=${candidateUrls.length}`);
 
           let bestHtml: string | null = null;
@@ -877,7 +912,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
             const html = await pageRes.text();
 
-            // ✅ título / social-profile precisam ser calculados por resposta
             const title = shortTitle(html);
             const isSocialProfile =
               /\/social\//i.test(finalUrl) ||
@@ -944,10 +978,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             title: shortTitle(bestHtml),
             body_sha1: sha1(bestHtml),
             extracted_at: nowIso,
-            mode: "cookie_file",
+            mode: source === "b64" ? "cookie_b64" : "cookie_file",
           };
 
-          // ⚠️ Mantive seu comportamento: PK offer_id = externalId (MLB/MLBU)
           const { error: upErr } = await supabase
             .from("offer_last_price")
             .upsert(
@@ -980,7 +1013,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             .update({
               current_price_cents: priceCents,
               current_price_updated_at: nowIso,
-              url: bestFinalUrl, // ✅ canoniza
+              url: bestFinalUrl, // canoniza
             })
             .eq("id", offer.id);
 
@@ -1013,7 +1046,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         },
       );
 
-      // ✅ contar erros do pool como falhas
       if (poolErrors.length > 0) {
         job.failed += poolErrors.length;
         if (!lastErrorSample) {
@@ -1060,7 +1092,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           http429: job.http429,
           retries: job.retries,
           durationMs,
-          mode: "html-cookie-file",
+          mode: source === "b64" ? "html-cookie-b64" : "html-cookie-file",
           stoppedEarly: shouldStopEarly,
         },
         error: lastErrorSample,
@@ -1089,7 +1121,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       priceNotFound: job.priceNotFound,
       durationMs,
       errorSample: lastErrorSample,
-      mode: "html-cookie-file",
+      mode: source === "b64" ? "html-cookie-b64" : "html-cookie-file",
       stoppedEarly: shouldStopEarly,
       logs: logs.slice(-160),
     });

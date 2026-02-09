@@ -3,7 +3,12 @@ import { getSupabase } from "@/integrations/supabase/client";
 import type { Product } from "@/types/product";
 
 /**
- * ✅ useProducts.ts — versão corrigida e estável
+ * ✅ useProducts.ts — versão corrigida + sync de store_offers (mercadolivre)
+ *
+ * Importante:
+ * - Seu admin hoje grava apenas em "products".
+ * - Seus crons (ml-resolve-sec / ml-prices) usam "store_offers".
+ * - Este arquivo conecta os dois: ao criar/atualizar produto, ele cria/atualiza a oferta em store_offers.
  */
 
 const PRODUCT_SELECT_FIELDS = `
@@ -53,6 +58,100 @@ function cleanUndefined<T extends Record<string, any>>(obj: T) {
  */
 function emptyStringToNull(v: any) {
   return v === "" ? null : v;
+}
+
+/**
+ * Extrai MLB/MLBU de qualquer URL/texto:
+ * - https://www.mercadolivre.com.br/p/MLB65193923
+ * - https://produto.mercadolivre.com.br/MLB-98312000924
+ * - MLB98312000924
+ * - MLBU12345678
+ */
+function extractMlExternalId(input?: string | null): string | null {
+  if (!input) return null;
+  const s = String(input);
+
+  const mlbu = s.match(/(MLBU\d{6,14})/i)?.[1];
+  if (mlbu) return mlbu.toUpperCase();
+
+  const mlb = s.match(/(MLB\d{6,14})/i)?.[1];
+  if (mlb) return mlb.toUpperCase();
+
+  // casos MLB-<digits>
+  const mlbDash = s.match(/MLB-(\d{6,14})/i)?.[1];
+  if (mlbDash) return `MLB${mlbDash}`;
+
+  return null;
+}
+
+async function syncMercadoLivreOffer(params: {
+  productId: string;
+  mercadolivreLink: string | null;
+  sourceUrl: string | null;
+  isActive: boolean;
+}) {
+  const supabase = getSupabase();
+  const platform = "mercadolivre"; // ⚠️ precisa bater com o PLATFORM_LABEL dos seus crons
+
+  // Se não tem link, desativa oferta (se existir)
+  if (!params.mercadolivreLink) {
+    const { data: existing, error: selErr } = await supabase
+      .from("store_offers")
+      .select("id")
+      .eq("product_id", params.productId)
+      .eq("platform", platform)
+      .maybeSingle();
+
+    if (selErr) throw selErr;
+
+    if (existing?.id) {
+      const { error: upErr } = await supabase
+        .from("store_offers")
+        .update({ is_active: false })
+        .eq("id", existing.id);
+
+      if (upErr) throw upErr;
+    }
+    return;
+  }
+
+  const externalId =
+    extractMlExternalId(params.sourceUrl) ??
+    extractMlExternalId(params.mercadolivreLink) ??
+    null;
+
+  // Procura existente (product_id + platform)
+  const { data: existing, error: selErr } = await supabase
+    .from("store_offers")
+    .select("id")
+    .eq("product_id", params.productId)
+    .eq("platform", platform)
+    .maybeSingle();
+
+  if (selErr) throw selErr;
+
+  const offerPayload: any = {
+    product_id: params.productId,
+    platform,
+    url: params.mercadolivreLink,
+    external_id: externalId,
+    is_active: params.isActive ?? true,
+  };
+
+  if (existing?.id) {
+    const { error: upErr } = await supabase
+      .from("store_offers")
+      .update(offerPayload)
+      .eq("id", existing.id);
+
+    if (upErr) throw upErr;
+  } else {
+    const { error: insErr } = await supabase
+      .from("store_offers")
+      .insert(offerPayload);
+
+    if (insErr) throw insErr;
+  }
 }
 
 /* ================================
@@ -181,6 +280,15 @@ export function useCreateProduct() {
         .single();
 
       if (error) throw error;
+
+      // ✅ cria/atualiza store_offers para o cron pegar
+      await syncMercadoLivreOffer({
+        productId: data.id,
+        mercadolivreLink: data.mercadolivre_link ?? null,
+        sourceUrl: data.source_url ?? null,
+        isActive: data.is_active ?? true,
+      });
+
       return data as Product;
     },
 
@@ -191,7 +299,7 @@ export function useCreateProduct() {
 }
 
 /* ================================
-   UPDATE PRODUCT (CORRIGIDO)
+   UPDATE PRODUCT
 ================================ */
 
 export function useUpdateProduct() {
@@ -228,7 +336,7 @@ export function useUpdateProduct() {
 
         is_active: updates.is_active ?? undefined,
         category_id: updates.category_id ?? undefined,
-        source_url: emptyStringToNull(updates.source_url),
+        source_url: emptyStringToNull((updates as any).source_url),
       });
 
       const { data, error } = await supabase
@@ -239,6 +347,15 @@ export function useUpdateProduct() {
         .single();
 
       if (error) throw error;
+
+      // ✅ mantém store_offers sincronizado
+      await syncMercadoLivreOffer({
+        productId: data.id,
+        mercadolivreLink: data.mercadolivre_link ?? null,
+        sourceUrl: data.source_url ?? null,
+        isActive: data.is_active ?? true,
+      });
+
       return data as Product;
     },
 
