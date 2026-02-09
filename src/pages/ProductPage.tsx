@@ -12,13 +12,57 @@ import { formatCurrency } from "@/lib/utils"
 import { Helmet } from "react-helmet-async"
 import { useProductMetrics } from "@/hooks/useProductMetrics"
 import { StoreButton } from "@/components/StoreButton"
-import { useQuery } from "@tanstack/react-query"
-import { getSupabase } from "@/integrations/supabase/client"
 
+// ----------------- price helpers -----------------
 function parsePrice(label: string) {
-  const value = (label || "").replace(/[^\d,]/g, "").replace(",", ".")
-  const n = parseFloat(value)
+  const raw = (label || "").trim()
+  if (!raw) return NaN
+
+  // Mantém apenas dígitos, "." e ","
+  const cleaned = raw.replace(/[^\d.,]/g, "")
+  if (!cleaned) return NaN
+
+  const hasDot = cleaned.includes(".")
+  const hasComma = cleaned.includes(",")
+
+  // Caso "1.234,56" (pt-BR) -> remove milhar, troca decimal
+  if (hasDot && hasComma) {
+    const n = Number(cleaned.replace(/\./g, "").replace(",", "."))
+    return Number.isFinite(n) ? n : NaN
+  }
+
+  // Caso "533,99" -> decimal pt-BR
+  if (hasComma && !hasDot) {
+    const n = Number(cleaned.replace(",", "."))
+    return Number.isFinite(n) ? n : NaN
+  }
+
+  // Caso com "." apenas:
+  // - "533.99" => decimal
+  // - "1.234"  => milhar (remove pontos)
+  if (hasDot && !hasComma) {
+    // se termina com .dd, assume decimal
+    if (/\.\d{2}$/.test(cleaned)) {
+      const n = Number(cleaned)
+      return Number.isFinite(n) ? n : NaN
+    }
+    // senão, assume separador de milhar
+    const n = Number(cleaned.replace(/\./g, ""))
+    return Number.isFinite(n) ? n : NaN
+  }
+
+  // Só dígitos
+  const n = Number(cleaned)
   return Number.isFinite(n) ? n : NaN
+}
+
+function toPriceNumber(v: unknown): number | null {
+  if (typeof v === "number" && Number.isFinite(v)) return v
+  if (typeof v === "string") {
+    const n = parsePrice(v)
+    return Number.isFinite(n) ? n : null
+  }
+  return null
 }
 
 function getReviewStyles(url: string) {
@@ -85,20 +129,6 @@ function unwrapNestedGoUrl(raw: string) {
   return current
 }
 
-type BestOfferRow = {
-  product_id: string
-  offer_id: number
-  platform: "mercadolivre" | "shopee" | "amazon"
-  url: string
-  external_id: string
-  priority_boost: number
-  price: number | null
-  currency: string | null
-  is_available: boolean
-  verified_at: string
-  verified_date: string
-}
-
 function getOrCreateSessionId() {
   const sessionKey = "sid"
   let sid = sessionStorage.getItem(sessionKey)
@@ -112,6 +142,33 @@ function getOrCreateSessionId() {
   }
 
   return sid
+}
+
+/**
+ * Escolhe o melhor CTA com base nos preços manuais já cadastrados no admin:
+ * products.{shopee_price, mercadolivre_price, amazon_price} + links correspondentes.
+ * - menor preço ganha
+ * - desempate por prioridade (Amazon > Mercado Livre > Shopee), consistente com seus secundários
+ */
+function pickBestManualOffer(product: any): { store: Offer["store"]; price: number; url: string } | null {
+  if (!product) return null
+
+  const candidates: Array<{ store: Offer["store"]; price: number; url: string; priority: number }> = []
+
+  const shopeePrice = toPriceNumber(product?.shopee_price)
+  const mlPrice = toPriceNumber(product?.mercadolivre_price)
+  const amzPrice = toPriceNumber(product?.amazon_price)
+
+  if (product?.amazon_link && amzPrice && amzPrice > 0) candidates.push({ store: "amazon", price: amzPrice, url: product.amazon_link, priority: 0 })
+  if (product?.mercadolivre_link && mlPrice && mlPrice > 0)
+    candidates.push({ store: "mercadolivre", price: mlPrice, url: product.mercadolivre_link, priority: 1 })
+  if (product?.shopee_link && shopeePrice && shopeePrice > 0) candidates.push({ store: "shopee", price: shopeePrice, url: product.shopee_link, priority: 2 })
+
+  if (candidates.length === 0) return null
+
+  candidates.sort((a, b) => a.price - b.price || a.priority - b.priority)
+  const best = candidates[0]
+  return { store: best.store, price: best.price, url: best.url }
 }
 
 export default function ProductPage() {
@@ -132,27 +189,11 @@ export default function ProductPage() {
 
   const hasReview = !!product?.review_url
 
-  // ✅ Best offer (preço verificado + CTA primário automático)
-  const bestOfferQuery = useQuery({
-    queryKey: ["best-offer", product?.id],
-    enabled: !!product?.id,
-    queryFn: async (): Promise<BestOfferRow | null> => {
-      const supabase = getSupabase()
-
-      const { data, error } = await supabase
-        .from("v_product_best_offer")
-        .select(
-          "product_id, offer_id, platform, url, external_id, priority_boost, price, currency, is_available, verified_at, verified_date"
-        )
-        .eq("product_id", product!.id)
-        .maybeSingle()
-
-      if (error) throw error
-      return (data as BestOfferRow | null) ?? null
-    },
-  })
-
-  const bestOffer = bestOfferQuery.data ?? null
+  // ✅ Best offer manual (confiável enquanto cron/verificado está poluído)
+  const bestOffer = useMemo(() => {
+    if (!product) return null
+    return pickBestManualOffer(product)
+  }, [product])
 
   // ✅ Ofertas secundárias (mantém compatibilidade com os links atuais do product)
   // - Primário: bestOffer (se existir)
@@ -165,11 +206,11 @@ export default function ProductPage() {
       list.push({ store: "mercadolivre", label: "Comprar agora no Mercado Livre", url: product.mercadolivre_link, priority: 1 })
     if (product.shopee_link) list.push({ store: "shopee", label: "Comprar agora na Shopee", url: product.shopee_link, priority: 2 })
 
-    const primaryStore = bestOffer?.platform
+    const primaryStore = bestOffer?.store
     const filtered = primaryStore ? list.filter((o) => o.store !== primaryStore) : list
 
     return filtered.sort((a, b) => a.priority - b.priority)
-  }, [product, bestOffer?.platform])
+  }, [product, bestOffer?.store])
 
   const hasAnyOffers = !!bestOffer || secondaryOffers.length > 0
 
@@ -207,16 +248,12 @@ export default function ProductPage() {
 
   /**
    * TRACKING VIEW (server-side)
-   * - Gera session_id estável por sessão
-   * - Não faz dedupe “definitivo” no client (isso fica no backend)
-   * - Throttle curto (10s) só pra evitar spam acidental em dev/hot reload
    */
   useEffect(() => {
     if (!product?.id) return
 
     const sid = getOrCreateSessionId()
 
-    // throttle curto por produto (não é dedupe): evita múltiplos hits em poucos segundos
     const throttleKey = `view:throttle:${product.id}`
     const last = Number(sessionStorage.getItem(throttleKey) || "0")
     const now = Date.now()
@@ -229,7 +266,6 @@ export default function ProductPage() {
     })
   }, [product?.id])
 
-  // (Opcional) tracking “client analytics” separado (GA/etc)
   useEffect(() => {
     if (product) trackProductView(product.slug, product.category)
   }, [product])
@@ -262,35 +298,35 @@ export default function ProductPage() {
     )
   }
 
-  // ✅ Preço: prioriza o verificado (bestOffer.price), fallback para label manual
-  const manualPrice = parsePrice(product.price_label)
-  const finalPrice = bestOffer?.price ?? (Number.isFinite(manualPrice) ? manualPrice : NaN)
+  // ✅ Preço: prioriza o melhor manual do admin; fallback para label
+  const bestPrice = typeof bestOffer?.price === "number" ? bestOffer.price : null
+  const manualLabelPrice = parsePrice(product.price_label)
+  const finalPrice = bestPrice ?? (Number.isFinite(manualLabelPrice) ? manualLabelPrice : NaN)
 
-  const today = new Date().toISOString().slice(0, 10)
-  const verifiedToday = bestOffer?.verified_date === today
-
-  /**
-   * ✅ URGÊNCIA: só quando existe motivo.
-   * - 1) prioridade: urgency_label (admin)
-   * - 2) fallback automático: quando “Em alta”
-   */
   const urgencyFromData = (product.urgency_label || "").trim()
   const computedUrgency = !urgencyFromData && showTrending ? "Alta demanda hoje" : ""
   const urgencyText = urgencyFromData || computedUrgency
 
-  /**
-   * ✅ “Sinais do produto” só aparece se existir sinal real
-   */
   const shouldShowSignalsCard = Boolean(showTrending || hasReview || urgencyText)
 
-  // ✅ CTA primário: passa session_id também (para fechar funil)
+  // ✅ CTA primário: usa URL manual do admin e mantém rastreio /api/go (url-based)
   const primaryGoHref = bestOffer
     ? (() => {
         const sid = getOrCreateSessionId()
+        const finalUrl = unwrapNestedGoUrl(bestOffer.url) || bestOffer.url
+
+        if (!isSafeHttpUrl(finalUrl)) {
+          console.error("[primaryGoHref] URL inválida para outbound:", { offerUrl: bestOffer.url, finalUrl })
+          return "#"
+        }
+
         const params = new URLSearchParams({
-          offer_id: String(bestOffer.offer_id),
+          url: finalUrl,
+          product_id: product.id,
+          store: bestOffer.store,
           session_id: sid,
         })
+
         return `/api/go?${params.toString()}`
       })()
     : ""
@@ -353,7 +389,7 @@ export default function ProductPage() {
                 </span>
 
                 <span className="text-xs text-muted-foreground">
-                  {bestOffer ? (verifiedToday ? "preço verificado hoje" : `preço verificado em ${bestOffer.verified_date}`) : "preço pode variar"}
+                  {bestOffer ? "preço cadastrado (pode variar)" : "preço pode variar"}
                 </span>
               </div>
 
@@ -393,16 +429,17 @@ export default function ProductPage() {
 
               {hasAnyOffers && (
                 <div className="space-y-3">
-                  {/* ✅ CTA primário: bestOffer (verificado) → /api/go?offer_id=...&session_id=... */}
+                  {/* ✅ CTA primário: melhor oferta manual (admin) → /api/go?url=...&product_id=...&store=...&session_id=... */}
                   {bestOffer ? (
                     <StoreButton
-                      store={bestOffer.platform}
+                      store={bestOffer.store}
                       productId={product.id}
                       productSlug={product.slug}
                       category={product.category}
                       price={Number.isFinite(finalPrice) ? finalPrice : undefined}
                       href={primaryGoHref}
-                      target={isMobileLike() ? "_self" : "_blank"}
+                      target={primaryGoHref === "#" ? "_self" : isMobileLike() ? "_self" : "_blank"}
+                      disabled={primaryGoHref === "#"}
                     />
                   ) : null}
 
@@ -442,11 +479,6 @@ export default function ProductPage() {
                         </div>
                       )}
                     </div>
-                  )}
-
-                  {/* feedback leve enquanto bestOffer carrega */}
-                  {bestOfferQuery.isLoading && (
-                    <p className="text-xs text-muted-foreground leading-relaxed">Verificando preço e disponibilidade…</p>
                   )}
                 </div>
               )}

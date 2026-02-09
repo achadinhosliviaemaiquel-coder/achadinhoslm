@@ -9,7 +9,7 @@ interface StoreButtonProps {
   store: Store
   productId: string
   productSlug: string
-  price: number
+  price?: number
   category: string
   href: string
   className?: string
@@ -55,6 +55,12 @@ function resolveCtaLabel(opts: { storeShort: string; price?: number; isPrimary?:
   return hasValidPrice ? `Ver na ${storeShort}` : `Ver oferta na ${storeShort}`
 }
 
+function toPriceCents(price?: number) {
+  if (typeof price !== "number" || !Number.isFinite(price) || price <= 0) return null
+  // arredonda para evitar problemas tipo 49.9900000003
+  return Math.round(price * 100)
+}
+
 export function StoreButton({
   store,
   productId,
@@ -74,20 +80,20 @@ export function StoreButton({
 
   const navigateOnce = () => {
     if (target === "_blank") {
-      // ✅ Abre apenas UMA aba (controlado)
       window.open(href, "_blank", "noopener,noreferrer")
       return
     }
-    // ✅ Mesmo tab
     window.location.assign(href)
   }
 
   const handleClick = (e: React.MouseEvent<HTMLAnchorElement>) => {
-    // ✅ Impede o <a> de navegar sozinho (evita duplicação)
     e.preventDefault()
     if (isDisabled) return
 
+    const priceCents = toPriceCents(price)
+
     // ✅ Track only (GA + intent). Não deve navegar.
+    // IMPORTANT: manda price_cents para evitar bug de "39.90" virar "399"
     try {
       trackBuyClick({
         productId,
@@ -95,19 +101,18 @@ export function StoreButton({
         category,
         store,
         price,
+        priceCents: typeof price === "number" ? Math.round(price * 100) : undefined,
         outboundUrl: href,
       })
     } catch {
       // no-op
     }
 
-    // ✅ _blank: abre imediatamente (evita popup blocker)
     if (target === "_blank") {
       navigateOnce()
       return
     }
 
-    // ✅ _self: dá um respiro pequeno pro beacon sair (in-app browsers)
     window.setTimeout(navigateOnce, 80)
   }
 
@@ -126,7 +131,6 @@ export function StoreButton({
       <a
         href={isDisabled ? undefined : href}
         onClick={handleClick}
-        // ✅ Não usar target aqui (senão o browser abre outra aba sozinho)
         rel={target === "_blank" ? "noopener noreferrer" : undefined}
         aria-label={`${label} (abre ${target === "_blank" ? "em nova aba" : "na mesma aba"})`}
       >

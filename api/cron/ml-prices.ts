@@ -1,90 +1,95 @@
-// api/cron/ml-prices.ts
-type VercelRequest = any;
-type VercelResponse = any;
+import "dotenv/config";
+import type { VercelRequest, VercelResponse } from "@vercel/node";
 import { createClient } from "@supabase/supabase-js";
+import crypto from "crypto";
+import fs from "fs";
+import path from "path";
 
 type StoreOffer = {
-  id: number; // bigint
-  product_id: string; // uuid
-  platform: string; // enum label
-  external_id: string | null; // MLB...
+  id: number;
+  product_id: string;
+  platform: string;
+  external_id: string | null; // MLBxxxx / MLBUxxxx (se existir)
+  url: string | null;
   is_active: boolean;
 };
 
-type MLItemResponse = {
-  id: string; // "MLB123..."
-  price?: number | null;
-  original_price?: number | null;
-  currency_id?: string | null;
-  status?: string;
-};
+type ImportRow = { product_id: string; sec_url: string | null };
 
 type JobCounters = {
   scanned: number;
   updated: number;
-
-  // falhas "de verdade" (DB write, 5xx finais, etc)
   failed: number;
-
-  // observabilidades
   http429: number;
   retries: number;
-
-  // novos
-  notFoundDeactivated: number; // 404 -> is_active=false
-  authErrors: number; // 401/403 sem refresh, ou refresh falhou
+  unavailableDeactivated: number;
+  missingSecUrlSkipped: number;
   invalidExternalIdSkipped: number;
+  cookieMissingOrExpired: number; // aqui significa gate/captcha/login
+  priceNotFound: number;
 };
 
-function getEnv() {
-  const SUPABASE_URL = process.env.SUPABASE_URL || "";
-  const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || "";
-  const CRON_SECRET = process.env.CRON_SECRET || "";
+const SUPABASE_URL = process.env.SUPABASE_URL!;
+const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY!;
+const CRON_SECRET = process.env.CRON_SECRET!;
 
-  const ML_CLIENT_ID = process.env.ML_CLIENT_ID || "";
-  const ML_CLIENT_SECRET = process.env.ML_CLIENT_SECRET || "";
+const PLATFORM_LABEL = process.env.ML_PLATFORM_LABEL || "mercadolivre";
+const BATCH_SIZE = Number(process.env.ML_PRICE_BATCH_SIZE || "150");
+const MAX_CONCURRENCY = Number(process.env.ML_PRICE_CONCURRENCY || "2");
+const MAX_RETRIES = Number(process.env.ML_PRICE_MAX_RETRIES || "2");
+const BOT_FAILFAST_THRESHOLD = Number(
+  process.env.ML_PRICE_BOT_FAILFAST_THRESHOLD || "8",
+);
 
-  const ML_API_BASE = process.env.ML_API_BASE || "https://api.mercadolibre.com";
-  const BATCH_SIZE = Number(process.env.ML_PRICE_BATCH_SIZE || "150");
-  const MAX_CONCURRENCY = Number(process.env.ML_PRICE_CONCURRENCY || "8");
-  const MAX_RETRIES = Number(process.env.ML_PRICE_MAX_RETRIES || "3");
-  const PLATFORM_LABEL = process.env.ML_PLATFORM_LABEL || "mercadolivre";
+const COOKIE_FILE = process.env.ML_COOKIE_FILE || "./ml-cookie.json";
 
-  const missing: string[] = [];
-  if (!SUPABASE_URL) missing.push("SUPABASE_URL");
-  if (!SUPABASE_SERVICE_ROLE_KEY) missing.push("SUPABASE_SERVICE_ROLE_KEY");
-  if (!CRON_SECRET) missing.push("CRON_SECRET");
-  if (!ML_CLIENT_ID) missing.push("ML_CLIENT_ID");
-  if (!ML_CLIENT_SECRET) missing.push("ML_CLIENT_SECRET");
-  if (missing.length) throw new Error(`Missing env vars: ${missing.join(", ")}`);
+// ✅ valida cookie em /p/ (mais estável que homepage)
+const COOKIE_TEST_URL =
+  process.env.ML_COOKIE_TEST_URL ||
+  "https://www.mercadolivre.com.br/p/MLB19698479";
 
-  return {
-    SUPABASE_URL,
-    SUPABASE_SERVICE_ROLE_KEY,
-    CRON_SECRET,
-    ML_CLIENT_ID,
-    ML_CLIENT_SECRET,
-    ML_API_BASE,
-    BATCH_SIZE,
-    MAX_CONCURRENCY,
-    MAX_RETRIES,
-    PLATFORM_LABEL,
-  };
-}
+// jitter default (ms)
+const JITTER_MIN_MS = Number(process.env.ML_JITTER_MIN_MS || "120");
+const JITTER_MAX_MS = Number(process.env.ML_JITTER_MAX_MS || "420");
 
 function utcDateString(d = new Date()) {
   const y = d.getUTCFullYear();
   const m = String(d.getUTCMonth() + 1).padStart(2, "0");
   const day = String(d.getUTCDate()).padStart(2, "0");
-  return `${y}-${m}-${day}`; // YYYY-MM-DD
+  return `${y}-${m}-${day}`;
+}
+
+function utcDateOnly(d = new Date()): string {
+  return utcDateString(d);
 }
 
 function sleep(ms: number) {
   return new Promise((r) => setTimeout(r, ms));
 }
 
+function randInt(min: number, max: number) {
+  const lo = Math.min(min, max);
+  const hi = Math.max(min, max);
+  return lo + Math.floor(Math.random() * (hi - lo + 1));
+}
+
+async function jitter() {
+  await sleep(randInt(JITTER_MIN_MS, JITTER_MAX_MS));
+}
+
+type MlExternalId = { prefix: "MLB" | "MLBU"; digits: string; raw: string };
+
+function parseMlExternalId(externalId: string | null): MlExternalId | null {
+  if (!externalId) return null;
+  const m = externalId.match(/^(MLBU|MLB)(\d{6,14})$/i);
+  if (!m) return null;
+  const prefix = m[1].toUpperCase() as "MLB" | "MLBU";
+  const digits = m[2];
+  return { prefix, digits, raw: `${prefix}${digits}` };
+}
+
 function isValidMLB(externalId: string | null): externalId is string {
-  return !!externalId && /^MLB[0-9]+$/.test(externalId);
+  return !!parseMlExternalId(externalId);
 }
 
 function readHeader(req: VercelRequest, name: string): string {
@@ -97,7 +102,7 @@ async function runPool<T>(
   items: T[],
   concurrency: number,
   worker: (item: T) => Promise<void>,
-): Promise<{ errors: unknown[] }> {
+) {
   const errors: unknown[] = [];
   let i = 0;
 
@@ -119,178 +124,617 @@ async function runPool<T>(
   return { errors };
 }
 
-async function refreshMlToken(
-  supabase: ReturnType<typeof createClient>,
-  clientId: string,
-  clientSecret: string,
-  tokenRowId: number,
-  refreshToken: string,
-) {
-  const tokenRes = await fetch("https://api.mercadolibre.com/oauth/token", {
-    method: "POST",
-    headers: { "content-type": "application/x-www-form-urlencoded" },
-    body: new URLSearchParams({
-      grant_type: "refresh_token",
-      client_id: clientId,
-      client_secret: clientSecret,
-      refresh_token: refreshToken,
-    }).toString(),
-  });
-
-  const raw = (await tokenRes.json().catch(() => ({}))) as any;
-  if (!tokenRes.ok) {
-    throw new Error(`ML refresh failed: ${JSON.stringify(raw).slice(0, 500)}`);
-  }
-
-  const access_token = raw.access_token as string | undefined;
-  const refresh_token = (raw.refresh_token as string | undefined) ?? refreshToken;
-  const expires_in = Number(raw.expires_in || 0);
-
-  if (!access_token || !expires_in) {
-    throw new Error(`ML refresh invalid payload: ${JSON.stringify(raw).slice(0, 500)}`);
-  }
-
-  const expires_at = new Date(Date.now() + expires_in * 1000).toISOString();
-
-  const { error } = await supabase
-    .from("ml_oauth_tokens")
-    .update({
-      access_token,
-      refresh_token,
-      expires_at,
-      updated_at: new Date().toISOString(),
-    })
-    .eq("id", tokenRowId);
-
-  if (error) throw new Error(`DB update ml_oauth_tokens failed: ${error.message}`);
-
-  return { accessToken: access_token, refreshToken: refresh_token };
+function normalizeCookieHeader(cookie: string) {
+  let s = (cookie || "").trim();
+  s = s.replace(/^cookie\s*:\s*/i, "");
+  s = s.replace(/[\r\n]+/g, " ").trim();
+  s = s.replace(/\s{2,}/g, " ");
+  return s;
 }
 
-async function getValidMlAccessToken(
-  supabase: ReturnType<typeof createClient>,
-  clientId: string,
-  clientSecret: string,
-): Promise<{
-  accessToken: string;
-  tokenRowId: number;
-  refreshToken: string | null;
-}> {
-  const { data, error } = await supabase
-    .from("ml_oauth_tokens")
-    .select("id, access_token, refresh_token, expires_at")
-    .order("updated_at", { ascending: false })
-    .limit(1)
-    .single<{
-      id: number;
-      access_token: string;
-      refresh_token: string | null;
-      expires_at: string;
-    }>();
+function readCookieFromFile(): string {
+  const p = path.resolve(process.cwd(), COOKIE_FILE);
+  if (!fs.existsSync(p)) throw new Error(`ML_COOKIE_FILE not found: ${p}`);
 
-  if (error || !data) {
-    throw new Error("Missing ml_oauth_tokens. Run OAuth: /api/ml/oauth/start");
+  // ✅ remove BOM caso editor salve com BOM
+  const raw = fs.readFileSync(p, "utf8").replace(/^\uFEFF/, "");
+
+  let json: any;
+  try {
+    json = JSON.parse(raw);
+  } catch (e: any) {
+    throw new Error(`ML_COOKIE_FILE invalid JSON: ${e?.message || e}`);
   }
 
-  const expiresAt = new Date(data.expires_at).getTime();
-  const now = Date.now();
+  // aceita cookie direto
+  let cookie = typeof json.cookie === "string" ? json.cookie : "";
 
-  if (expiresAt - now >= 2 * 60 * 1000) {
+  // ou cookie em base64
+  if (!cookie && typeof json.cookie_base64 === "string") {
+    cookie = Buffer.from(json.cookie_base64, "base64").toString("utf8");
+  }
+
+  cookie = normalizeCookieHeader(cookie || "");
+  if (!cookie) throw new Error("ML_COOKIE_FILE exists but cookie is empty");
+
+  return cookie;
+}
+
+function buildBrowserHeaders(cookie: string) {
+  return {
+    accept:
+      "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
+    "accept-language": "pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7",
+    "cache-control": "no-cache",
+    pragma: "no-cache",
+    "upgrade-insecure-requests": "1",
+    dnt: "1",
+    referer: "https://www.mercadolivre.com.br/",
+
+    // ✅ ajuda contra WAFs (fingerprint básico)
+    "sec-fetch-site": "same-origin",
+    "sec-fetch-mode": "navigate",
+    "sec-fetch-dest": "document",
+    "sec-fetch-user": "?1",
+    "sec-ch-ua":
+      '"Chromium";v="122", "Not(A:Brand";v="24", "Google Chrome";v="122"',
+    "sec-ch-ua-mobile": "?0",
+    "sec-ch-ua-platform": '"Windows"',
+
+    "user-agent":
+      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+    cookie,
+  } as Record<string, string>;
+}
+
+/**
+ * ⚠️ "Gate" real (captcha/login/WAF) vs falso positivo.
+ * Homepage pode conter strings "captcha" em scripts: valida cookie em /p/ e usa heurística mais dura.
+ */
+function isHardGate(html: string, finalUrl: string) {
+  const s = html.toLowerCase();
+
+  const urlSignals =
+    /\/(authorization|auth|login)\b/i.test(finalUrl) ||
+    /\/(ingreso|entrar)\b/i.test(finalUrl);
+
+  const hardSignals =
+    s.includes("hcaptcha") ||
+    s.includes("g-recaptcha") ||
+    s.includes("recaptcha") ||
+    s.includes("datadome") ||
+    s.includes("access denied") ||
+    s.includes("verify you are human") ||
+    (s.includes("verifique") && (s.includes("robô") || s.includes("robo"))) ||
+    s.includes("não sou um robô");
+
+  return urlSignals || hardSignals;
+}
+
+function looksLikeRealMlPage(html: string) {
+  return (
+    html.includes("__NEXT_DATA__") ||
+    html.toLowerCase().includes("mercadolivre") ||
+    /<title[^>]*>[\s\S]*<\/title>/i.test(html)
+  );
+}
+
+async function validateCookie(cookie: string, log: (s: string) => void) {
+  const testUrl = COOKIE_TEST_URL;
+
+  log(`Validating cookie using testUrl=${testUrl}`);
+
+  // pequeno jitter antes do teste
+  await jitter();
+
+  const res = await fetch(testUrl, {
+    method: "GET",
+    headers: buildBrowserHeaders(cookie),
+    redirect: "follow",
+  });
+
+  const anyRes = res as any;
+  const finalUrl =
+    typeof anyRes.url === "string" && anyRes.url ? anyRes.url : testUrl;
+
+  const html = await res.text();
+  const title = shortTitle(html);
+
+  if (!res.ok) {
+    // não conclui cookie inválido só por HTTP != 200
+    log(
+      `Cookie validation HTTP ${res.status} title=${title ?? "n/a"} finalUrl=${finalUrl}`,
+    );
+    return;
+  }
+
+  // se for gate "hard" e não parecer página real, aí sim invalidar
+  if (isHardGate(html, finalUrl) && !looksLikeRealMlPage(html)) {
+    log(
+      `Cookie validation HARD-GATE title=${title ?? "n/a"} finalUrl=${finalUrl}`,
+    );
+    throw new Error(
+      "ML cookie is invalid or expired (hard gate detected on test page)",
+    );
+  }
+
+  log(`Cookie validation OK title=${title ?? "n/a"} finalUrl=${finalUrl}`);
+}
+
+const FETCH_TIMEOUT_MS = Number(process.env.ML_FETCH_TIMEOUT_MS || "25000");
+
+async function fetchWithRetryHtml(
+  url: string,
+  job: JobCounters,
+  maxRetries: number,
+  cookie: string,
+  log: (s: string) => void,
+) {
+  let attempt = 0;
+  let backoff = 700;
+
+  while (true) {
+    await jitter();
+
+    const ac = new AbortController();
+    const to = setTimeout(() => ac.abort(), FETCH_TIMEOUT_MS);
+
+    let res: Response;
+    try {
+      res = await fetch(url, {
+        method: "GET",
+        redirect: "follow",
+        headers: buildBrowserHeaders(cookie),
+        signal: ac.signal,
+      });
+    } catch (e: any) {
+      clearTimeout(to);
+
+      const msg = String(e?.name || e?.message || e);
+      log(`FETCH error (${msg}) url=${url}`);
+
+      if (attempt >= maxRetries) throw e;
+
+      job.retries += 1;
+      await sleep(Math.min(backoff + randInt(100, 600), 12000));
+      attempt += 1;
+      backoff *= 2;
+      continue;
+    } finally {
+      clearTimeout(to);
+    }
+
+    if (res.status === 429) {
+      job.http429 += 1;
+      log(`HTTP 429 url=${url}`);
+      if (attempt >= maxRetries) return res;
+
+      job.retries += 1;
+      const retryAfter = res.headers.get("retry-after");
+      const waitMs = retryAfter ? Number(retryAfter) * 1000 : backoff;
+      await sleep(Math.min(waitMs + randInt(100, 600), 12000));
+      attempt += 1;
+      backoff *= 2;
+      continue;
+    }
+
+    if (res.status >= 500 && res.status <= 599) {
+      log(`HTTP ${res.status} (5xx) url=${url}`);
+      if (attempt >= maxRetries) return res;
+
+      job.retries += 1;
+      await sleep(Math.min(backoff + randInt(100, 600), 12000));
+      attempt += 1;
+      backoff *= 2;
+      continue;
+    }
+
+    return res;
+  }
+}
+
+function safeJsonParse<T = any>(s: string): T | null {
+  try {
+    return JSON.parse(s) as T;
+  } catch {
+    return null;
+  }
+}
+
+function parseNumberLoose(v: unknown): number | null {
+  if (typeof v === "number" && Number.isFinite(v)) return v;
+  if (typeof v !== "string") return null;
+
+  let s = v.replace(/\s+/g, " ").replace(/[R$\u00A0]/g, "").trim();
+
+  const hasComma = s.includes(",");
+  const hasDot = s.includes(".");
+
+  if (hasComma && hasDot) {
+    const lastComma = s.lastIndexOf(",");
+    const lastDot = s.lastIndexOf(".");
+    if (lastComma > lastDot) {
+      s = s.replace(/\./g, "").replace(",", ".");
+    } else {
+      s = s.replace(/,/g, "");
+    }
+  } else if (hasComma) {
+    s = s.replace(/\./g, "").replace(",", ".");
+  } else {
+    s = s.replace(/,/g, "");
+  }
+
+  const m = s.match(/-?\d+(\.\d+)?/);
+  if (!m) return null;
+
+  const n = Number(m[0]);
+  return Number.isFinite(n) ? n : null;
+}
+
+function extractNextData(html: string): any | null {
+  const re = /<script[^>]*id=["']__NEXT_DATA__["'][^>]*>([\s\S]*?)<\/script>/i;
+  const m = html.match(re);
+  if (!m?.[1]) return null;
+  return safeJsonParse(m[1].trim());
+}
+
+function extractJsonLdBlocks(html: string): any[] {
+  const blocks: any[] = [];
+  const re =
+    /<script[^>]*type=["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi;
+
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(html))) {
+    const raw = m[1]?.trim();
+    if (!raw) continue;
+    const parsed = safeJsonParse(raw);
+    if (parsed) blocks.push(parsed);
+  }
+  return blocks;
+}
+
+function extractPreloadedState(html: string): any | null {
+  const re = /__PRELOADED_STATE__\s*=\s*({[\s\S]*?})\s*;?\s*<\/script>/i;
+  const m = html.match(re);
+  if (!m?.[1]) return null;
+  return safeJsonParse(m[1]);
+}
+
+function extractMetaPrice(html: string) {
+  const priceM = html.match(
+    /<meta[^>]+itemprop=["']price["'][^>]+content=["']([^"']+)["'][^>]*>/i,
+  );
+  const curM = html.match(
+    /<meta[^>]+itemprop=["']priceCurrency["'][^>]+content=["']([^"']+)["'][^>]*>/i,
+  );
+  const price = priceM?.[1] ? parseNumberLoose(priceM[1]) : null;
+  const currency = curM?.[1] ?? null;
+  return { price, currency };
+}
+
+function extractProductOfferFromJsonLd(block: any) {
+  const candidates = Array.isArray(block) ? block : [block];
+
+  for (const node of candidates) {
+    if (!node || typeof node !== "object") continue;
+
+    const type = (node as any)["@type"];
+    const isProduct =
+      type === "Product" || (Array.isArray(type) && type.includes("Product"));
+    if (!isProduct) continue;
+
+    const offers = (node as any).offers;
+    const offerList = Array.isArray(offers) ? offers : offers ? [offers] : [];
+
+    for (const off of offerList) {
+      if (!off || typeof off !== "object") continue;
+
+      const p =
+        parseNumberLoose((off as any).price ?? (off as any).lowPrice ?? null) ??
+        null;
+      if (p === null) continue;
+
+      const cur =
+        typeof (off as any).priceCurrency === "string"
+          ? (off as any).priceCurrency
+          : typeof (node as any).priceCurrency === "string"
+            ? (node as any).priceCurrency
+            : null;
+
+      const original =
+        parseNumberLoose(
+          (off as any).highPrice ?? (off as any).original_price,
+        ) ?? null;
+
+      return {
+        price: p,
+        original,
+        currency: cur,
+        detail: "jsonld:Product.offers.price",
+      };
+    }
+  }
+
+  return null;
+}
+
+function deepFindPrice(obj: any): {
+  price: number | null;
+  original: number | null;
+  currency: string | null;
+} {
+  const stack: any[] = [obj];
+  const seen = new Set<any>();
+
+  while (stack.length) {
+    const cur = stack.pop();
+    if (!cur || typeof cur !== "object") continue;
+    if (seen.has(cur)) continue;
+    seen.add(cur);
+
+    if (Array.isArray(cur)) {
+      for (const it of cur) stack.push(it);
+      continue;
+    }
+
+    const priceRaw =
+      (cur as any).price ??
+      (cur as any).amount ??
+      (cur as any).current_price ??
+      null;
+
+    const currency =
+      (cur as any).currency_id ??
+      (cur as any).priceCurrency ??
+      (cur as any).currency ??
+      null;
+
+    const original =
+      (cur as any).original_price ??
+      (cur as any).originalPrice ??
+      (cur as any).base_price ??
+      (cur as any).old_price ??
+      null;
+
+    const p = parseNumberLoose(priceRaw);
+    if (p !== null) {
+      return {
+        price: p,
+        original: parseNumberLoose(original),
+        currency: typeof currency === "string" ? currency : null,
+      };
+    }
+
+    for (const k of Object.keys(cur)) stack.push((cur as any)[k]);
+  }
+
+  return { price: null, original: null, currency: null };
+}
+
+function extractPriceFromHtml(html: string) {
+  const meta = extractMetaPrice(html);
+  if (meta.price !== null) {
     return {
-      accessToken: data.access_token,
-      tokenRowId: data.id,
-      refreshToken: data.refresh_token,
+      price: meta.price,
+      original: null,
+      currency: meta.currency ?? "BRL",
+      evidence: "meta" as const,
+      evidence_detail: "meta[itemprop=price]" as const,
     };
   }
 
-  // expirou e não tem refresh_token -> retorna mesmo assim e deixa o handler lidar com 401/403 sem quebrar
-  if (!data.refresh_token) {
-    return {
-      accessToken: data.access_token,
-      tokenRowId: data.id,
-      refreshToken: null,
-    };
+  for (const block of extractJsonLdBlocks(html)) {
+    const found = extractProductOfferFromJsonLd(block);
+    if (found?.price !== null) {
+      return {
+        price: found.price,
+        original: found.original,
+        currency: found.currency ?? "BRL",
+        evidence: "jsonld" as const,
+        evidence_detail: found.detail as const,
+      };
+    }
   }
 
-  const r = await refreshMlToken(supabase, clientId, clientSecret, data.id, data.refresh_token);
+  const next = extractNextData(html);
+  if (next) {
+    const found = deepFindPrice(next);
+    if (found.price !== null) {
+      return {
+        ...found,
+        currency: found.currency ?? "BRL",
+        evidence: "__NEXT_DATA__" as const,
+        evidence_detail: "deepFindPrice(__NEXT_DATA__)" as const,
+      };
+    }
+  }
+
+  const pre = extractPreloadedState(html);
+  if (pre) {
+    const found = deepFindPrice(pre);
+    if (found.price !== null) {
+      return {
+        ...found,
+        currency: found.currency ?? "BRL",
+        evidence: "__PRELOADED_STATE__" as const,
+        evidence_detail: "deepFindPrice(__PRELOADED_STATE__)" as const,
+      };
+    }
+  }
+
+  const money = html.match(/R\$\s*([0-9]{1,3}(\.[0-9]{3})*,[0-9]{2})/);
+  if (money?.[1]) {
+    const p = parseNumberLoose(money[1]);
+    if (p !== null) {
+      return {
+        price: p,
+        original: null,
+        currency: "BRL",
+        evidence: "regex_brl" as const,
+        evidence_detail: "regex:R$" as const,
+      };
+    }
+  }
 
   return {
-    accessToken: r.accessToken,
-    tokenRowId: data.id,
-    refreshToken: r.refreshToken,
+    price: null as number | null,
+    original: null as number | null,
+    currency: null as string | null,
+    evidence: "none" as const,
+    evidence_detail: "none" as const,
   };
 }
 
-async function fetchWithRetry(url: string, job: JobCounters, maxRetries: number, accessToken: string) {
-  let attempt = 0;
-  let backoff = 400;
+function looksLikeLoginOrBot(html: string, finalUrl: string) {
+  const s = html.toLowerCase();
 
-  while (true) {
-    try {
-      const res = await fetch(url, {
-        method: "GET",
-        headers: {
-          accept: "application/json",
-          authorization: `Bearer ${accessToken}`,
-          "accept-language": "pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7",
-          "user-agent":
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-        },
-      });
+  const botSignals =
+    s.includes("hcaptcha") ||
+    s.includes("g-recaptcha") ||
+    s.includes("recaptcha") ||
+    s.includes("captcha") ||
+    s.includes("challenge") ||
+    s.includes("datadome") ||
+    s.includes("access denied") ||
+    (s.includes("verifique") && (s.includes("robô") || s.includes("robo"))) ||
+    s.includes("não sou um robô");
 
-      if (res.status === 429) {
-        job.http429 += 1;
-        if (attempt >= maxRetries) return res;
-        job.retries += 1;
-        const retryAfter = res.headers.get("retry-after");
-        const waitMs = retryAfter ? Number(retryAfter) * 1000 : backoff;
-        await sleep(Math.min(waitMs, 5000));
-        attempt += 1;
-        backoff *= 2;
-        continue;
-      }
+  const loginSignals =
+    s.includes("iniciar sessão") ||
+    s.includes("inicie sessão") ||
+    s.includes("entrar na sua conta") ||
+    (s.includes("identificação") && s.includes("e-mail")) ||
+    s.includes("ingresar") ||
+    s.includes("iniciar sesion");
 
-      if (res.status >= 500 && res.status <= 599) {
-        if (attempt >= maxRetries) return res;
-        job.retries += 1;
-        await sleep(Math.min(backoff, 5000));
-        attempt += 1;
-        backoff *= 2;
-        continue;
-      }
+  const urlSignals =
+    /\/(authorization|auth|login)\b/i.test(finalUrl) ||
+    /\/(ingreso|entrar)\b/i.test(finalUrl);
 
-      return res;
-    } catch (e) {
-      if (attempt >= maxRetries) throw e;
-      job.retries += 1;
-      await sleep(Math.min(backoff, 5000));
-      attempt += 1;
-      backoff *= 2;
+  return botSignals || loginSignals || urlSignals;
+}
+
+function isBadUrl(url: string) {
+  const s = (url || "").toLowerCase();
+  return (
+    s.includes("/social/") ||
+    s.includes("/sec/") ||
+    s.includes("forceinapp=true") ||
+    s.includes("matt_tool=") ||
+    s.includes("matt_word=")
+  );
+}
+
+/**
+ * Remove tracking “matt_*”, forceInApp, ref etc.
+ */
+function cleanMlUrl(input: string): string | null {
+  try {
+    const u = new URL(input);
+
+    const kill = [
+      "forceInApp",
+      "forceinapp",
+      "ref",
+      "matt_tool",
+      "matt_word",
+      "matt_campaign",
+      "matt_source",
+      "matt_custom",
+      "matt_ad_id",
+      "matt_adset_id",
+      "matt_platform",
+    ];
+
+    for (const k of kill) u.searchParams.delete(k);
+
+    for (const [k] of Array.from(u.searchParams.entries())) {
+      if (k.toLowerCase().startsWith("matt_")) u.searchParams.delete(k);
     }
+
+    u.hash = "";
+    return u.toString();
+  } catch {
+    return null;
   }
+}
+
+/**
+ * ✅ tenta múltiplos formatos que o ML usa
+ * Ajuste importante:
+ * - Para MLB (item/anúncio), prioriza MLB-<digits> (produto.mercadolivre.com.br e mercadolivre.com.br)
+ * - /p/ pode funcionar (catálogo), mas nem sempre existe
+ * - /up/ é útil mais para MLBU; para MLB geralmente é ruído
+ */
+function mlCandidateUrls(externalId: string) {
+  const parsed = parseMlExternalId(externalId);
+  if (!parsed) return [];
+
+  const { prefix, digits, raw } = parsed;
+
+  const urls: string[] = [];
+
+  if (prefix === "MLB") {
+    // ✅ melhor chance para MLB longos
+    urls.push(`https://produto.mercadolivre.com.br/MLB-${digits}`);
+    urls.push(`https://www.mercadolivre.com.br/MLB-${digits}`);
+
+    // catálogo (quando existir)
+    urls.push(`https://www.mercadolivre.com.br/p/${raw}`);
+
+    // fallback
+    urls.push(`https://www.mercadolivre.com.br/${raw}`);
+  } else {
+    // MLBU (quando você tiver): /up/ costuma ser mais relevante
+    urls.push(`https://www.mercadolivre.com.br/up/${raw}`);
+    urls.push(`https://www.mercadolivre.com.br/p/${raw}`);
+    urls.push(`https://produto.mercadolivre.com.br/${raw}-${digits}`); // fallback defensivo
+    urls.push(`https://www.mercadolivre.com.br/${raw}`);
+  }
+
+  return urls;
+}
+
+function shortTitle(html: string) {
+  const m = html.match(/<title[^>]*>([\s\S]*?)<\/title>/i);
+  const t = m?.[1]?.replace(/\s+/g, " ").trim();
+  return t ? t.slice(0, 140) : null;
+}
+
+function sha1(s: string) {
+  return crypto.createHash("sha1").update(s).digest("hex");
+}
+
+function hasStrongPrice(found: ReturnType<typeof extractPriceFromHtml>) {
+  return (
+    found.price !== null &&
+    found.price > 0 &&
+    (found.evidence === "meta" ||
+      found.evidence === "jsonld" ||
+      found.evidence === "__NEXT_DATA__" ||
+      found.evidence === "__PRELOADED_STATE__")
+  );
 }
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   const t0 = Date.now();
+  const logs: string[] = [];
+  const log = (s: string) => {
+    const line = `[ml-prices] ${new Date().toISOString()} ${s}`;
+    logs.push(line);
+    console.log(line);
+  };
 
   try {
-    const {
-      SUPABASE_URL,
-      SUPABASE_SERVICE_ROLE_KEY,
-      CRON_SECRET,
-      ML_CLIENT_ID,
-      ML_CLIENT_SECRET,
-      ML_API_BASE,
-      BATCH_SIZE,
-      MAX_CONCURRENCY,
-      MAX_RETRIES,
-      PLATFORM_LABEL,
-    } = getEnv();
-
     const got = readHeader(req, "x-cron-secret");
     if (got !== CRON_SECRET) {
       return res.status(401).json({ ok: false, error: "Unauthorized" });
     }
+
+    const cookie = readCookieFromFile();
+    log(`Cookie loaded from ML_COOKIE_FILE (${COOKIE_FILE})`);
+
+    await validateCookie(cookie, log);
 
     const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, {
       auth: { persistSession: false },
@@ -302,73 +746,26 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       failed: 0,
       http429: 0,
       retries: 0,
-      notFoundDeactivated: 0,
-      authErrors: 0,
+      unavailableDeactivated: 0,
+      missingSecUrlSkipped: 0,
       invalidExternalIdSkipped: 0,
+      cookieMissingOrExpired: 0,
+      priceNotFound: 0,
     };
 
     const snapshotDate = utcDateString(new Date());
 
-    // token ML (com refresh se possível)
-    const tokenInfo = await getValidMlAccessToken(supabase, ML_CLIENT_ID, ML_CLIENT_SECRET);
-    let accessToken = tokenInfo.accessToken;
-    const tokenRowId = tokenInfo.tokenRowId;
-    let refreshToken = tokenInfo.refreshToken;
-
-    // lock de refresh (evita corrida entre workers)
-    let refreshInFlight: Promise<{ accessToken: string; refreshToken: string } | null> | null = null;
-
-    // se bater 401/403 e não houver refresh -> sinaliza para parar chamadas inúteis
-    let authBroken = false;
-
-    async function ensureFreshTokenOnAuthError(): Promise<boolean> {
-      if (!refreshToken) {
-        authBroken = true;
-        job.authErrors += 1;
-        return false;
-      }
-
-      if (!refreshInFlight) {
-        refreshInFlight = (async () => {
-          try {
-            const r = await refreshMlToken(
-              supabase,
-              ML_CLIENT_ID,
-              ML_CLIENT_SECRET,
-              tokenRowId,
-              refreshToken!,
-            );
-            return { accessToken: r.accessToken, refreshToken: r.refreshToken };
-          } catch {
-            return null;
-          }
-        })();
-      }
-
-      const r = await refreshInFlight;
-      refreshInFlight = null;
-
-      if (!r) {
-        authBroken = true;
-        job.authErrors += 1;
-        return false;
-      }
-
-      accessToken = r.accessToken;
-      refreshToken = r.refreshToken;
-      return true;
-    }
-
-    // price_job_runs
     const { data: runRow, error: runErr } = await supabase
       .from("price_job_runs")
       .insert({
         platform: PLATFORM_LABEL,
         status: "running",
+        started_at: new Date().toISOString(),
         stats: {
           snapshotDate,
           batchSize: BATCH_SIZE,
           concurrency: MAX_CONCURRENCY,
+          mode: "html-cookie-file",
         },
       })
       .select("id")
@@ -383,29 +780,33 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     }
 
     const jobRunId = runRow.id;
+    let lastErrorSample: string | null = null;
+
+    // (mantido; hoje não é usado no fluxo, mas pode ser útil depois)
+    const { data: imports, error: impErr } = await supabase
+      .from("ml_link_import")
+      .select("product_id, sec_url");
+    if (impErr) throw new Error(`DB read ml_link_import error: ${impErr.message}`);
+
+    const secByProduct = new Map<string, string>();
+    for (const row of (imports ?? []) as ImportRow[]) {
+      if (row.product_id && row.sec_url) secByProduct.set(row.product_id, row.sec_url);
+    }
 
     let offset = 0;
-    let lastErrorSample: string | null = null;
+    let shouldStopEarly = false;
 
     while (true) {
       const { data: offers, error } = await supabase
         .from("store_offers")
-        .select("id, product_id, platform, external_id, is_active")
+        .select("id, product_id, platform, external_id, url, is_active")
         .eq("platform", PLATFORM_LABEL)
         .eq("is_active", true)
-        .not("external_id", "is", null)
+        .order("id", { ascending: true })
         .range(offset, offset + BATCH_SIZE - 1);
 
-      if (error) throw new Error(`DB read error: ${error.message}`);
+      if (error) throw new Error(`DB read store_offers error: ${error.message}`);
       if (!offers || offers.length === 0) break;
-
-      // se auth já está quebrada, não vale a pena seguir varrendo tudo
-      if (authBroken) {
-        lastErrorSample =
-          lastErrorSample ??
-          "ML auth broken (401/403) and no refresh available (or refresh failed). Re-run OAuth: /api/ml/oauth/start";
-        break;
-      }
 
       const filtered = (offers as StoreOffer[]).filter((o) => {
         const ok = isValidMLB(o.external_id);
@@ -414,145 +815,208 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       });
 
       job.scanned += filtered.length;
+      log(`Batch offset=${offset} offers=${offers.length} filtered=${filtered.length}`);
 
-      if (filtered.length > 0) {
-        const { errors: poolErrors } = await runPool(filtered, MAX_CONCURRENCY, async (offer) => {
-          if (authBroken) return;
+      const { errors: poolErrors } = await runPool(
+        filtered,
+        MAX_CONCURRENCY,
+        async (offer) => {
+          if (shouldStopEarly) return;
 
-          const itemId = offer.external_id!;
-          const url = `${ML_API_BASE}/items/${encodeURIComponent(itemId)}`;
+          const externalId = offer.external_id!;
+          const parsed = parseMlExternalId(externalId);
+          if (!parsed) return;
 
-          // 1) tentativa com token atual
-          let mlRes = await fetchWithRetry(url, job, MAX_RETRIES, accessToken);
+          const label = parsed.raw; // MLBxxxx / MLBUxxxx
 
-          // 2) 404 = Item inválido/expirado -> desativa e segue
-          if (mlRes.status === 404) {
-            const { error: deactErr } = await supabase
-              .from("store_offers")
-              .update({ is_active: false })
-              .eq("id", offer.id);
+          const urlRaw = offer.url?.trim() || null;
+          const urlClean = urlRaw ? cleanMlUrl(urlRaw) : null;
 
-            if (deactErr) {
-              job.failed += 1;
-              if (!lastErrorSample) {
-                lastErrorSample = `Deactivate offer failed id=${offer.id}: ${deactErr.message}`.slice(
-                  0,
-                  500,
+          const candidates: string[] = [];
+          if (urlRaw) candidates.push(urlRaw);
+          if (urlClean && urlClean !== urlRaw) candidates.push(urlClean);
+
+          candidates.push(...mlCandidateUrls(label));
+
+          const seen = new Set<string>();
+          const candidateUrls = candidates.filter((u) => {
+            if (!u) return false;
+            const key = u.trim();
+            if (!key) return false;
+            if (seen.has(key)) return false;
+            seen.add(key);
+            return true;
+          });
+
+          // log útil p/ debugar os 7 que ficam null
+          log(`Candidates id=${offer.id} ext=${label} count=${candidateUrls.length}`);
+
+          let bestHtml: string | null = null;
+          let bestFinalUrl: string | null = null;
+          let bestFetchUrl: string | null = null;
+          let bestFound: ReturnType<typeof extractPriceFromHtml> | null = null;
+
+          for (const fetchUrl of candidateUrls) {
+            if (isBadUrl(fetchUrl)) {
+              log(`Trying tracked url ext=${label} url=${fetchUrl}`);
+            }
+
+            const pageRes = await fetchWithRetryHtml(
+              fetchUrl,
+              job,
+              MAX_RETRIES,
+              cookie,
+              log,
+            );
+
+            const anyRes = pageRes as any;
+            const finalUrl =
+              typeof anyRes.url === "string" && anyRes.url ? anyRes.url : fetchUrl;
+
+            if (!pageRes.ok) continue;
+
+            const html = await pageRes.text();
+
+            // ✅ título / social-profile precisam ser calculados por resposta
+            const title = shortTitle(html);
+            const isSocialProfile =
+              /\/social\//i.test(finalUrl) ||
+              /perfil social/i.test(title ?? "") ||
+              /maaiquels/i.test(title ?? "");
+
+            const extracted = extractPriceFromHtml(html);
+
+            if (!hasStrongPrice(extracted) && looksLikeLoginOrBot(html, finalUrl)) {
+              if (isSocialProfile) {
+                log(
+                  `Ignoring social-profile gate ext=${label} title=${title ?? "n/a"} url=${finalUrl}`,
                 );
+                continue;
               }
-              return;
-            }
 
-            job.notFoundDeactivated += 1;
-            return;
-          }
+              job.cookieMissingOrExpired += 1;
 
-          // 3) 401/403 -> tenta refresh 1x; se não der, não quebra job
-          if (mlRes.status === 401 || mlRes.status === 403) {
-            const ok = await ensureFreshTokenOnAuthError();
-            if (!ok) {
-              lastErrorSample =
-                lastErrorSample ??
-                "ML returned 401/403 and refresh_token is missing or refresh failed. Re-run OAuth: /api/ml/oauth/start";
-              return;
-            }
+              const msg = `GATE detected ext=${label} title=${title ?? "n/a"} url=${finalUrl}`;
+              if (!lastErrorSample) lastErrorSample = msg.slice(0, 500);
+              log(msg);
 
-            // re-tenta 1x
-            mlRes = await fetchWithRetry(url, job, MAX_RETRIES, accessToken);
-
-            // se ainda 401/403 depois do refresh -> marca authBroken e para
-            if (mlRes.status === 401 || mlRes.status === 403) {
-              authBroken = true;
-              job.authErrors += 1;
-              lastErrorSample =
-                lastErrorSample ??
-                `ML still ${mlRes.status} after refresh attempt. Re-run OAuth: /api/ml/oauth/start`;
-              return;
-            }
-
-            // se após refresh virou 404, também desativa
-            if (mlRes.status === 404) {
-              const { error: deactErr } = await supabase
-                .from("store_offers")
-                .update({ is_active: false })
-                .eq("id", offer.id);
-
-              if (deactErr) {
-                job.failed += 1;
-                if (!lastErrorSample) {
-                  lastErrorSample = `Deactivate offer failed id=${offer.id}: ${deactErr.message}`.slice(
-                    0,
-                    500,
-                  );
-                }
+              if (job.cookieMissingOrExpired >= BOT_FAILFAST_THRESHOLD) {
+                shouldStopEarly = true;
+                log(
+                  `Failfast: gateCount=${job.cookieMissingOrExpired} threshold=${BOT_FAILFAST_THRESHOLD}`,
+                );
                 return;
               }
+              continue;
+            }
 
-              job.notFoundDeactivated += 1;
-              return;
+            if (extracted.evidence === "regex_brl") continue;
+
+            if (extracted.price !== null && extracted.price > 0) {
+              bestHtml = html;
+              bestFinalUrl = finalUrl;
+              bestFetchUrl = fetchUrl;
+              bestFound = extracted;
+
+              if (hasStrongPrice(extracted)) break;
             }
           }
 
-          // 4) outros erros HTTP -> conta falha e segue (sem throw)
-          if (!mlRes.ok) {
-            job.failed += 1;
-            const body = await mlRes.text().catch(() => "");
-            const msg = `ML API ${mlRes.status} for ${itemId}: ${body.slice(0, 300)}`;
+          if (!bestHtml || !bestFound || !bestFinalUrl || !bestFetchUrl) {
+            job.priceNotFound += 1;
+            const msg = `Price not found in any ML path ext=${label} offerId=${offer.id}`;
             if (!lastErrorSample) lastErrorSample = msg.slice(0, 500);
+            log(msg);
             return;
           }
 
-          const raw = (await mlRes.json()) as MLItemResponse;
+          const now = new Date();
+          const nowIso = now.toISOString();
+          const verifiedDate = utcDateOnly(now);
+          const currency_id = bestFound.currency ?? "BRL";
 
-          const price = typeof raw.price === "number" ? raw.price : null;
-          const original_price =
-            typeof raw.original_price === "number" ? raw.original_price : null;
-          const currency_id = raw.currency_id ?? null;
+          const raw = {
+            source: "html",
+            evidence: bestFound.evidence,
+            evidence_detail: bestFound.evidence_detail,
+            fetchUrl: bestFetchUrl,
+            finalUrl: bestFinalUrl,
+            title: shortTitle(bestHtml),
+            body_sha1: sha1(bestHtml),
+            extracted_at: nowIso,
+            mode: "cookie_file",
+          };
 
-          // 1) upsert last price por offer_id
-          const { error: upErr } = await supabase.from("offer_last_price").upsert(
-            {
-              offer_id: offer.id,
-              currency_id,
-              price,
-              original_price,
-              last_checked_at: new Date().toISOString(),
-              raw,
-            },
-            { onConflict: "offer_id" },
-          );
+          // ⚠️ Mantive seu comportamento: PK offer_id = externalId (MLB/MLBU)
+          const { error: upErr } = await supabase
+            .from("offer_last_price")
+            .upsert(
+              {
+                offer_id: label, // TEXT PK
+                price: bestFound.price!,
+                original_price: bestFound.original,
+                currency_id,
+                is_available: true,
+                verified_at: nowIso,
+                verified_date: verifiedDate,
+                updated_at: nowIso,
+                last_checked_at: nowIso,
+                raw,
+              },
+              { onConflict: "offer_id" },
+            );
 
           if (upErr) {
             job.failed += 1;
-            throw new Error(`Upsert offer_last_price failed offer_id=${offer.id}: ${upErr.message}`);
+            throw new Error(
+              `Upsert offer_last_price failed ext=${label}: ${upErr.message}`,
+            );
           }
 
-          // 2) snapshot diário (1 por offer/dia)
-          const { error: snapErr } = await supabase.from("offer_price_snapshots").upsert(
-            {
-              offer_id: offer.id,
-              snapshot_date: snapshotDate,
-              currency_id,
-              price,
-              original_price,
-              collected_at: new Date().toISOString(),
-              raw,
-            },
-            {
-              onConflict: "offer_id,snapshot_date",
-              ignoreDuplicates: true,
-            },
-          );
+          const priceCents = Math.round(bestFound.price! * 100);
 
-          if (snapErr) {
+          const { error: soErr } = await supabase
+            .from("store_offers")
+            .update({
+              current_price_cents: priceCents,
+              current_price_updated_at: nowIso,
+              url: bestFinalUrl, // ✅ canoniza
+            })
+            .eq("id", offer.id);
+
+          if (soErr) {
             job.failed += 1;
-            throw new Error(`Upsert snapshot failed offer_id=${offer.id}: ${snapErr.message}`);
+            throw new Error(
+              `Update store_offers failed ext=${label}: ${soErr.message}`,
+            );
+          }
+
+          const { error: prodErr } = await supabase
+            .from("products")
+            .update({
+              mercadolivre_price: bestFound.price!,
+              updated_at: nowIso,
+            })
+            .eq("id", offer.product_id);
+
+          if (prodErr) {
+            job.failed += 1;
+            throw new Error(
+              `Update products.mercadolivre_price failed ext=${label}: ${prodErr.message}`,
+            );
           }
 
           job.updated += 1;
-        });
+          log(
+            `OK ext=${label} price=${bestFound.price} via=${bestFetchUrl} final=${bestFinalUrl} currency=${currency_id}`,
+          );
+        },
+      );
 
-        if (poolErrors.length > 0 && !lastErrorSample) {
+      // ✅ contar erros do pool como falhas
+      if (poolErrors.length > 0) {
+        job.failed += poolErrors.length;
+        if (!lastErrorSample) {
           lastErrorSample = String(
             poolErrors[0] instanceof Error ? poolErrors[0].message : poolErrors[0],
           ).slice(0, 500);
@@ -560,14 +1024,20 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       }
 
       offset += BATCH_SIZE;
+      if (shouldStopEarly) break;
       if (offers.length < BATCH_SIZE) break;
     }
 
     const durationMs = Date.now() - t0;
 
-    // ✅ AJUSTE: incidentes operacionais (auth sem refresh, 404, etc) => partial (nunca failed).
-    // "failed" fica reservado para erros estruturais que estouram no catch (500).
-    const hadIncidents = job.failed > 0 || job.notFoundDeactivated > 0 || job.authErrors > 0;
+    const hadIncidents =
+      job.failed > 0 ||
+      job.unavailableDeactivated > 0 ||
+      job.missingSecUrlSkipped > 0 ||
+      job.invalidExternalIdSkipped > 0 ||
+      job.cookieMissingOrExpired > 0 ||
+      job.priceNotFound > 0;
+
     const finalStatus = !hadIncidents ? "success" : "partial";
 
     const { error: finErr } = await supabase
@@ -582,13 +1052,16 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           scanned: job.scanned,
           updated: job.updated,
           failed: job.failed,
-          notFoundDeactivated: job.notFoundDeactivated,
-          authErrors: job.authErrors,
+          unavailableDeactivated: job.unavailableDeactivated,
+          missingSecUrlSkipped: job.missingSecUrlSkipped,
           invalidExternalIdSkipped: job.invalidExternalIdSkipped,
+          cookieMissingOrExpired: job.cookieMissingOrExpired,
+          priceNotFound: job.priceNotFound,
           http429: job.http429,
           retries: job.retries,
           durationMs,
-          authBroken,
+          mode: "html-cookie-file",
+          stoppedEarly: shouldStopEarly,
         },
         error: lastErrorSample,
       })
@@ -605,20 +1078,26 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     return res.status(200).json({
       ok: true,
       status: finalStatus,
-      snapshotDate,
       scanned: job.scanned,
       updated: job.updated,
       failed: job.failed,
-      notFoundDeactivated: job.notFoundDeactivated,
-      authErrors: job.authErrors,
-      invalidExternalIdSkipped: job.invalidExternalIdSkipped,
       http429: job.http429,
       retries: job.retries,
+      missingSecUrlSkipped: job.missingSecUrlSkipped,
+      invalidExternalIdSkipped: job.invalidExternalIdSkipped,
+      cookieMissingOrExpired: job.cookieMissingOrExpired,
+      priceNotFound: job.priceNotFound,
       durationMs,
-      authBroken,
       errorSample: lastErrorSample,
+      mode: "html-cookie-file",
+      stoppedEarly: shouldStopEarly,
+      logs: logs.slice(-160),
     });
-  } catch (err: any) {
-    return res.status(500).json({ ok: false, error: err?.message || "Unknown error" });
+  } catch (e: any) {
+    console.error(e);
+    return res.status(500).json({
+      ok: false,
+      error: e?.message || "Unknown error",
+    });
   }
 }

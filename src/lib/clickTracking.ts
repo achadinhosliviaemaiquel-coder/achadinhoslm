@@ -1,30 +1,55 @@
-type Store = "shopee" | "mercadolivre" | "amazon";
+type Store = "shopee" | "mercadolivre" | "amazon"
 
-type TrackBuyClickParams = {
-  productId: string;
-  productSlug: string;
-  category: string;
-  store: Store;
-  price: number;
-  outboundUrl: string;
-};
+export type TrackBuyClickParams = {
+  productId: string
+  productSlug?: string
+  category?: string
+  store: Store
+  price?: number // decimal (ex: 49.99)
+  priceCents?: number // inteiro (ex: 4999) — preferencial
+  outboundUrl?: string
+}
 
 declare global {
   interface Window {
-    gtag?: (...args: any[]) => void;
+    gtag?: (...args: any[]) => void
   }
 }
 
-function buildIntentUrl(p: TrackBuyClickParams) {
-  const qs = new URLSearchParams({
-    product_id: p.productId,
-    store: p.store,
-    product_slug: p.productSlug,
-    category: p.category,
-    price: String(p.price ?? ""),
-  });
+function isFinitePositive(n: unknown): n is number {
+  return typeof n === "number" && Number.isFinite(n) && n > 0
+}
 
-  return `${window.location.origin}/api/intent?${qs.toString()}`;
+function toPriceCentsFromDecimal(price?: number) {
+  if (!isFinitePositive(price)) return null
+  return Math.round(price * 100)
+}
+
+function buildIntentUrl(p: TrackBuyClickParams) {
+  const qs = new URLSearchParams()
+
+  qs.set("product_id", p.productId)
+  qs.set("store", p.store)
+
+  if (p.productSlug) qs.set("product_slug", p.productSlug)
+  if (p.category) qs.set("category", p.category)
+
+  // ✅ Prioriza cents (evita bug "39.90" virar "399")
+  const cents =
+    isFinitePositive(p.priceCents) ? Math.trunc(p.priceCents) : toPriceCentsFromDecimal(p.price) ?? null
+
+  if (cents !== null && cents > 0) {
+    qs.set("price_cents", String(cents))
+    qs.set("price", (cents / 100).toFixed(2))
+  } else if (isFinitePositive(p.price)) {
+    qs.set("price", p.price.toFixed(2))
+  }
+
+  // (opcional) outboundUrl se você quiser logar depois
+  // se seu intent.ts não usa isso, pode deixar comentado
+  // if (p.outboundUrl) qs.set("outbound_url", p.outboundUrl)
+
+  return `${window.location.origin}/api/intent?${qs.toString()}`
 }
 
 /**
@@ -43,20 +68,20 @@ export function trackBuyClick(p: TrackBuyClickParams) {
       product_slug: p.productSlug,
       category: p.category,
       store: p.store,
-      value: p.price ?? undefined,
-    });
+      // ✅ value deve ser decimal (GA)
+      value: isFinitePositive(p.price) ? p.price : undefined,
+    })
   } catch {
     // no-op
   }
 
   // 2) Intent via beacon/keepalive (dev + prod)
   try {
-    const intentUrl = buildIntentUrl(p);
-    if (navigator.sendBeacon) {
-      navigator.sendBeacon(intentUrl);
-    } else {
-      fetch(intentUrl, { method: "GET", keepalive: true }).catch(() => {});
-    }
+    const intentUrl = buildIntentUrl(p)
+
+    // ✅ sendBeacon envia um body; como estamos usando GET, prefira fetch keepalive.
+    // Ainda assim, se quiser manter sendBeacon, mande POST (mais correto).
+    fetch(intentUrl, { method: "GET", keepalive: true }).catch(() => {})
   } catch {
     // no-op
   }

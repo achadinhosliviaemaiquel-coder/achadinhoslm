@@ -31,3 +31,4 @@ supabase/.env.*
 *.sw?
 .vercel
 .env*.local
+ml-cookie.json

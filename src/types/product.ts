@@ -20,41 +20,59 @@ export interface Category {
 }
 
 /* ================================
-   PRODUCT
+   PRODUCT (TIPO PERMISSIVO)
 ================================ */
 export interface Product {
   id: string;
   name: string;
   slug: string;
 
-  // 🔁 NOVO MODELO RELACIONAL
-  categories: Category; // ← vem do JOIN
-
-  // ⚠️ legado (ENUM antigo) — manter temporário
+  /**
+   * Categoria legada (string)
+   * Usada diretamente no front (CATEGORY_LABELS[product.category])
+   */
   category?: ProductCategory;
 
-  subcategory: string | null;
-  description: string | null;
-  benefits: string[];
+  /**
+   * FK real no banco (nem sempre vem no select)
+   */
+  category_id?: string | null;
 
-  price_label: string;
-  urgency_label: string | null;
-  image_urls: string[];
+  /**
+   * JOIN opcional (quando fizer select com relacionamento)
+   */
+  categories?: Category | null;
+
+  subcategory?: string | null;
+  description?: string | null;
+  benefits?: string[];
+
+  price_label?: string;
+  urgency_label?: string | null;
+  image_urls?: string[];
 
   review_url?: string | null;
   brand_slug?: string | null;
 
-  shopee_link: string | null;
-  mercadolivre_link: string | null;
-  amazon_link: string | null;
+  shopee_link?: string | null;
+  mercadolivre_link?: string | null;
+  amazon_link?: string | null;
 
   shopee_price?: number | null;
   mercadolivre_price?: number | null;
   amazon_price?: number | null;
 
-  is_active: boolean;
-  created_at: string;
-  updated_at: string;
+  is_active?: boolean;
+
+  created_at?: string;
+  updated_at?: string;
+
+  // campos que existem na tabela, mas nem sempre são usados no front
+  created_by?: string | null;
+  is_featured?: boolean | null;
+  views?: number | null;
+  views_count?: number | null;
+  source_url?: string | null;
 }
 
 /* ================================

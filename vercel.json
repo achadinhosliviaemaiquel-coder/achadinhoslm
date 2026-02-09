@@ -1,7 +1,17 @@
 {
   "crons": [
-    { "path": "/api/cron/ml-resolve-sec", "schedule": "30 5 * * *" },
-    { "path": "/api/cron/ml-prices", "schedule": "0 6 * * *" }
+    {
+      "path": "/api/cron/ml-resolve-sec",
+      "schedule": "0 9 * * *"
+    },
+    {
+      "path": "/api/cron/ml-prices",
+      "schedule": "5 9 * * *"
+    },
+    {
+      "path": "/api/cron/sync-products-prices",
+      "schedule": "10 9 * * *"
+    }
   ],
   "functions": {
     "api/**/*.ts": {

@@ -14,13 +14,13 @@ import { CATEGORY_LABELS, type Product, type ProductCategory } from "@/types/pro
 import { Loader2 } from "lucide-react"
 import BrandFormModal from "@/components/admin/BrandFormModal"
 import { getSupabase } from "@/integrations/supabase/client"
+import { useQueryClient } from "@tanstack/react-query"
 
 /**
  * ✅ IMPORTANTE (produção)
  * - Este ProductForm mantém o campo "URL do Produto (opcional)" (source_url),
  *   mas ele NÃO deve quebrar seu admin mesmo que a coluna ainda não exista no banco,
- *   porque o hook useCreateProduct/useUpdateProduct que te passei já faz payload defensivo
- *   e IGNORA campos extras.
+ *   porque o hook useCreateProduct/useUpdateProduct faz payload defensivo e ignora campos extras.
  *
  * - Quando você criar a coluna no Supabase, aí sim você pode passar a persistir source_url.
  */
@@ -87,19 +87,16 @@ const emptyToNull = (v: unknown) => (typeof v === "string" && v.trim() === "" ? 
 
 const emptyNumberToNull = (v: unknown) => {
   if (v === "" || v === undefined || v === null) return null
-
   if (typeof v === "string") {
     const normalized = v.replace(",", ".")
     const n = Number(normalized)
     return Number.isFinite(n) ? n : null
   }
-
   return Number.isFinite(v as number) ? (v as number) : null
 }
 
 async function resolveCategoryIdBySlug(categorySlug: string) {
   const supabase = getSupabase()
-
   if (!categorySlug || categorySlug === "all") return null
 
   const { data, error } = await supabase.from("categories").select("id").eq("slug", categorySlug).maybeSingle()
@@ -125,7 +122,6 @@ const productSchema = z.object({
   price_label: z.string().min(1, "Preço (label) é obrigatório"),
   image_urls: z.preprocess(emptyToNull, z.string().nullable().optional()),
 
-  // ✅ URL principal do produto (opcional)
   source_url: z.preprocess(emptyToNull, z.string().url().nullable().optional()),
 
   shopee_price: z.preprocess(emptyNumberToNull, z.number().nullable().optional()),
@@ -150,32 +146,54 @@ export function ProductForm({ product, onSuccess }: Props) {
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [brandModalOpen, setBrandModalOpen] = useState(false)
 
+  const queryClient = useQueryClient()
   const createProduct = useCreateProduct()
   const updateProduct = useUpdateProduct()
   const { toast } = useToast()
 
-  const { register, handleSubmit, setValue, watch, reset, control } = useForm<ProductFormData>({
-    resolver: zodResolver(productSchema),
-    defaultValues: {
-      name: "",
-      slug: "",
-      category: "",
-      brand_slug: "generico",
-      subcategory: "",
-      description: "",
-      benefits: "",
-      image_urls: "",
-      price_label: "",
-      source_url: "",
-      shopee_link: "",
-      mercadolivre_link: "",
-      amazon_link: "",
-      shopee_price: null,
-      mercadolivre_price: null,
-      amazon_price: null,
-      review_url: "",
-    },
-  })
+  const { register, handleSubmit, setValue, watch, reset, control } =
+    useForm<ProductFormData>({
+      resolver: zodResolver(productSchema),
+      defaultValues: {
+        name: "",
+        slug: "",
+        category: "",
+        brand_slug: "generico",
+        subcategory: "",
+        description: "",
+        benefits: "",
+        image_urls: "",
+        price_label: "",
+        source_url: "",
+        shopee_link: "",
+        mercadolivre_link: "",
+        amazon_link: "",
+        shopee_price: null,
+        mercadolivre_price: null,
+        amazon_price: null,
+        review_url: "",
+      },
+    })
+
+  /* ================================
+     🔥 WATCHERS CRÍTICOS
+  ================================ */
+
+  const shopeeLink = watch("shopee_link")
+  const mlLink = watch("mercadolivre_link")
+  const amazonLink = watch("amazon_link")
+
+  useEffect(() => {
+    if (!shopeeLink) setValue("shopee_price", null)
+  }, [shopeeLink, setValue])
+
+  useEffect(() => {
+    if (!mlLink) setValue("mercadolivre_price", null)
+  }, [mlLink, setValue])
+
+  useEffect(() => {
+    if (!amazonLink) setValue("amazon_price", null)
+  }, [amazonLink, setValue])
 
   useEffect(() => {
     if (!product) return
@@ -205,8 +223,7 @@ export function ProductForm({ product, onSuccess }: Props) {
   const name = watch("name")
   const { data: brands, refetch } = useBrands(category)
 
-  const normalize = (text: string) =>
-    text.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "")
+  const normalize = (text: string) => text.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "")
 
   const handleNameChange = (value: string) => {
     if (!product) {
@@ -235,20 +252,13 @@ export function ProductForm({ product, onSuccess }: Props) {
         return
       }
 
-      // ✅ Split/normalize arrays
-      const benefitsArr = data.benefits
-        ? data.benefits.split("\n").map((b) => b.trim()).filter(Boolean)
-        : []
-
-      const imagesArr = data.image_urls
-        ? data.image_urls.split("\n").map((i) => i.trim()).filter(Boolean)
-        : []
+      const benefitsArr = data.benefits ? data.benefits.split("\n").map((b) => b.trim()).filter(Boolean) : []
+      const imagesArr = data.image_urls ? data.image_urls.split("\n").map((i) => i.trim()).filter(Boolean) : []
 
       /**
-       * ✅ IMPORTANTE:
-       * - Nós NÃO dependemos do banco ter source_url.
-       * - O hook useCreateProduct/useUpdateProduct é que decide o que vai para o payload do Supabase.
-       * - Aqui mantemos `source_url` no objeto por consistência (e para quando você criar a coluna).
+       * ✅ PONTO CRÍTICO (remover links):
+       * Mesmo que o hook useUpdateProduct filtre null internamente,
+       * aqui nós já garantimos que os campos importantes vão explícitos como null quando vazios.
        */
       const productData: any = {
         ...data,
@@ -260,9 +270,14 @@ export function ProductForm({ product, onSuccess }: Props) {
         image_urls: imagesArr,
         is_active: true,
 
-        // garante null quando vazio
+        // ✅ normalização explícita (vazio -> null)
         source_url: data.source_url ?? null,
         review_url: data.review_url ?? null,
+
+        shopee_link: data.shopee_link ?? null,
+        mercadolivre_link: data.mercadolivre_link ?? null,
+        amazon_link: data.amazon_link ?? null,
+
         shopee_price: data.shopee_price ?? null,
         mercadolivre_price: data.mercadolivre_price ?? null,
         amazon_price: data.amazon_price ?? null,
@@ -273,6 +288,11 @@ export function ProductForm({ product, onSuccess }: Props) {
       } else {
         await createProduct.mutateAsync(productData)
       }
+
+      // ✅ garante que ao reabrir o modal você veja o dado atualizado (sem cache velho)
+      await queryClient.invalidateQueries({
+        predicate: (q) => Array.isArray(q.queryKey) && q.queryKey.some((k) => String(k).includes("products")),
+      })
 
       toast({ title: product ? "Produto atualizado!" : "Produto criado!" })
       reset()
@@ -300,9 +320,7 @@ export function ProductForm({ product, onSuccess }: Props) {
   useEffect(() => {
     if (!name || !category || !SUBCATEGORY_OPTIONS[category]) return
     const normalizedName = name.toLowerCase()
-    const match = SUBCATEGORY_OPTIONS[category].find((sub) =>
-      sub.keywords.some((k) => normalizedName.includes(k)),
-    )
+    const match = SUBCATEGORY_OPTIONS[category].find((sub) => sub.keywords.some((k) => normalizedName.includes(k)))
     if (match) setValue("subcategory", match.value)
   }, [name, category, setValue])
 
@@ -397,13 +415,11 @@ export function ProductForm({ product, onSuccess }: Props) {
               <SelectContent>
                 <SelectItem value="generico">Genérico</SelectItem>
 
-                {brands
-                  ?.filter((b) => b.slug !== "generico")
-                  .map((b) => (
-                    <SelectItem key={b.slug} value={b.slug}>
-                      {b.name}
-                    </SelectItem>
-                  ))}
+                {brands?.filter((b) => b.slug !== "generico").map((b) => (
+                  <SelectItem key={b.slug} value={b.slug}>
+                    {b.name}
+                  </SelectItem>
+                ))}
 
                 <div className="border-t mt-2 pt-2">
                   <button
@@ -461,9 +477,7 @@ export function ProductForm({ product, onSuccess }: Props) {
             {...register("review_url")}
             placeholder="https://www.youtube.com/... ou https://www.instagram.com/..."
           />
-          <p className="text-xs text-muted-foreground">
-            Opcional. Ajuda quem está indeciso a comprar.
-          </p>
+          <p className="text-xs text-muted-foreground">Opcional. Ajuda quem está indeciso a comprar.</p>
         </div>
 
         <Button type="submit" className="w-full" disabled={isSubmitting}>
