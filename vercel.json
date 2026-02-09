@@ -1,29 +1,30 @@
 {
   "crons": [
-    {
-      "path": "/api/cron/ml-resolve-sec",
-      "schedule": "0 9 * * *"
-    },
-    {
-      "path": "/api/cron/ml-prices",
-      "schedule": "5 9 * * *"
-    },
-    {
-      "path": "/api/cron/sync-products-prices",
-      "schedule": "10 9 * * *"
-    }
+    { "path": "/api/cron/ml-resolve-sec", "schedule": "0 9 * * *" },
+    { "path": "/api/cron/ml-prices", "schedule": "5 9 * * *" },
+    { "path": "/api/cron/sync-products-prices", "schedule": "10 9 * * *" }
   ],
   "functions": {
     "api/**/*.ts": {
       "maxDuration": 300
     }
   },
-  "routes": [
+  "headers": [
     {
-      "src": "/api/cron/.*",
-      "headers": {
-        "x-vercel-protection-bypass": "true"
-      }
+      "source": "/api/cron/(.*)",
+      "headers": [
+        { "key": "x-vercel-protection-bypass", "value": "true" }
+      ]
+    }
+  ],
+  "rewrites": [
+    {
+      "source": "/api/(.*)",
+      "destination": "/api/$1"
+    },
+    {
+      "source": "/(.*)",
+      "destination": "/index.html"
     }
   ]
 }
