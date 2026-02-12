@@ -5,26 +5,16 @@
     { "path": "/api/cron/sync-products-prices", "schedule": "10 9 * * *" }
   ],
   "functions": {
-    "api/**/*.ts": {
-      "maxDuration": 300
-    }
+    "api/**/*.ts": { "maxDuration": 300 }
   },
   "headers": [
     {
       "source": "/api/cron/(.*)",
-      "headers": [
-        { "key": "x-vercel-protection-bypass", "value": "true" }
-      ]
+      "headers": [{ "key": "x-vercel-protection-bypass", "value": "true" }]
     }
   ],
   "rewrites": [
-    {
-      "source": "/api/(.*)",
-      "destination": "/api/$1"
-    },
-    {
-      "source": "/(.*)",
-      "destination": "/index.html"
-    }
+    { "source": "/api/(.*)", "destination": "/api/$1" },
+    { "source": "/(.*)", "destination": "/index.html" }
   ]
 }

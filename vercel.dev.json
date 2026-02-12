@@ -1,0 +1,9 @@
+{
+  "devCommand": "vite --port $PORT",
+  "functions": {
+    "api/**/*.ts": { "maxDuration": 300 }
+  },
+  "rewrites": [
+    { "source": "/api/(.*)", "destination": "/api/$1" }
+  ]
+}

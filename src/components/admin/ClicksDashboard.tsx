@@ -5,6 +5,8 @@ import { useQuery } from "@tanstack/react-query"
 import { getSupabase } from "@/integrations/supabase/client"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
+import { Alert, AlertDescription, AlertTitle } from "@/components/ui/alert"
+import { Info } from "lucide-react"
 import { CATEGORY_LABELS, type ProductCategory } from "@/types/product"
 
 function storeLabel(store: string) {
@@ -28,22 +30,29 @@ type Mode = "funnel" | "performance"
 type Period = "24h" | "7d"
 type VolumeMetric = "outbounds" | "views"
 
-export default function ClicksDashboard() {
+export type Traffic = "all" | "organic" | "ads"
+
+type Props = {
+  traffic?: Traffic
+}
+
+export default function ClicksDashboard({ traffic = "all" }: Props) {
   const [mode, setMode] = useState<Mode>("performance")
   const [period, setPeriod] = useState<Period>("7d")
 
-  // filtros Performance
   const [activeCategory, setActiveCategory] = useState<ProductCategory | "all">("all")
   const [minViews7d, setMinViews7d] = useState(50)
-  const [alertBelow, setAlertBelow] = useState(2.0) // %
+  const [alertBelow, setAlertBelow] = useState(2.0)
 
-  // toggle do "Top Volume"
   const [volumeMetric, setVolumeMetric] = useState<VolumeMetric>("outbounds")
+
+  // ✅ Por enquanto NÃO filtra no backend, só prepara o "modo"
+  const trafficLabel = traffic === "all" ? "All" : traffic === "organic" ? "Orgânico" : "Ads"
 
   // =========================
   // 1) FUNIL (CTA -> /go)
   // =========================
-  const funnelQuery = useAdminClicksDashboard(period)
+  const funnelQuery = useAdminClicksDashboard(period, traffic)
 
   const funnelProductIds = useMemo(() => {
     const ids = new Set<string>()
@@ -53,6 +62,7 @@ export default function ClicksDashboard() {
   }, [funnelQuery.data?.intent.top, funnelQuery.data?.outbound.top])
 
   const { data: productsMap } = useQuery({
+    // ✅ Não inclua traffic até o backend filtrar de verdade (evita refetch desnecessário)
     queryKey: ["admin-clicks-products", funnelProductIds.join(",")],
     enabled: funnelProductIds.length > 0 && mode === "funnel",
     queryFn: async () => {
@@ -91,6 +101,7 @@ export default function ClicksDashboard() {
     minViews7d,
     limit: 400,
     alertEfficiency7dBelow: alertBelow,
+    traffic,
   })
 
   const perfRowsFiltered = useMemo(() => {
@@ -111,17 +122,14 @@ export default function ClicksDashboard() {
     return rows.reduce((sum, r) => sum + (r.outbounds_7d ?? 0), 0)
   }, [perfRowsFiltered, period])
 
-  // eficiência ponderada (não média simples)
   const windowEfficiency = useMemo(() => {
     if (windowViews <= 0) return 0
     return Math.round(((windowOutbounds / windowViews) * 100) * 10) / 10
   }, [windowViews, windowOutbounds])
 
   const topEfficiency = useMemo(() => {
-    // para ranking, evita ruído: só considera rows com views suficientes na janela escolhida
     const rows = perfRowsFiltered.slice()
-
-    const minViewsWindow = period === "24h" ? 10 : minViews7d // 24h é mais curto -> threshold menor
+    const minViewsWindow = period === "24h" ? 10 : minViews7d
     const filtered = rows.filter((r) => {
       const v = period === "24h" ? r.views_24h : r.views_7d
       return (v ?? 0) >= minViewsWindow
@@ -136,7 +144,6 @@ export default function ClicksDashboard() {
     return filtered.slice(0, 15)
   }, [perfRowsFiltered, period, minViews7d])
 
-  // helper: pega métrica de "volume" e desempates coerentes
   const getVolumeValue = (row: any) => {
     if (volumeMetric === "views") {
       return period === "24h" ? (row.views_24h ?? 0) : (row.views_7d ?? 0)
@@ -148,33 +155,28 @@ export default function ClicksDashboard() {
     const rows = perfRowsFiltered.slice()
 
     rows.sort((a, b) => {
-      // 1) ordena pela métrica escolhida (views ou outbounds)
       const vb = getVolumeValue(b)
       const va = getVolumeValue(a)
       if (vb !== va) return vb - va
 
-      // 2) desempate sempre por OUT (se o volume for views, OUT ajuda a priorizar monetização)
       const ob = period === "24h" ? (b.outbounds_24h ?? 0) : (b.outbounds_7d ?? 0)
       const oa = period === "24h" ? (a.outbounds_24h ?? 0) : (a.outbounds_7d ?? 0)
       if (ob !== oa) return ob - oa
 
-      // 3) desempate por VIEWS
       const vvb = period === "24h" ? (b.views_24h ?? 0) : (b.views_7d ?? 0)
       const vva = period === "24h" ? (a.views_24h ?? 0) : (a.views_7d ?? 0)
       if (vvb !== vva) return vvb - vva
 
-      // 4) desempate final: nome (estável)
       return (a.name ?? "").localeCompare(b.name ?? "")
     })
 
     return rows.slice(0, 15)
-  }, [perfRowsFiltered, period, volumeMetric]) // <- inclui volumeMetric
+  }, [perfRowsFiltered, period, volumeMetric])
 
   const alerts = useMemo(() => {
     const rows = perfRowsFiltered.slice()
 
     if (period === "24h") {
-      // regra equivalente para 24h (simples): views >= 30 e efficiency < alertBelow
       return rows
         .filter((r) => (r.views_24h ?? 0) >= 30)
         .filter((r) => (r.efficiency_24h ?? 0) < alertBelow)
@@ -182,7 +184,6 @@ export default function ClicksDashboard() {
         .slice(0, 30)
     }
 
-    // 7d usa o boolean do banco (melhor)
     return rows
       .filter((r) => r.alert_low_outbound_7d)
       .sort((a, b) => (b.views_7d ?? 0) - (a.views_7d ?? 0))
@@ -205,10 +206,27 @@ export default function ClicksDashboard() {
               ? "Intenção (CTA) vs Saída real (/go) — diagnose fricção técnica e drops."
               : "Views na ProductPage vs cliques reais de compra (/go) — priorize CRO e mix de produtos."}
           </p>
+          <div className="mt-2 flex items-center gap-2">
+            <Badge variant="secondary">Tráfego: {trafficLabel}</Badge>
+            {mode === "performance" && (
+              <Badge variant="outline">
+                Janela: {period} • Eficiência: {windowEfficiency}%
+              </Badge>
+            )}
+            {mode === "funnel" && (
+              <Badge variant="outline">
+                Janela: {period} • Eficiência: {funnelEfficiency}%
+              </Badge>
+            )}
+          </div>
         </div>
 
         <div className="flex flex-wrap gap-2">
-          <Button size="sm" variant={mode === "performance" ? "default" : "outline"} onClick={() => setMode("performance")}>
+          <Button
+            size="sm"
+            variant={mode === "performance" ? "default" : "outline"}
+            onClick={() => setMode("performance")}
+          >
             Performance
           </Button>
           <Button size="sm" variant={mode === "funnel" ? "default" : "outline"} onClick={() => setMode("funnel")}>
@@ -226,6 +244,15 @@ export default function ClicksDashboard() {
         </div>
       </div>
 
+      <Alert>
+        <Info className="h-4 w-4" />
+        <AlertTitle>Filtro de tráfego</AlertTitle>
+        <AlertDescription>
+          O filtro <b>{trafficLabel}</b> já está pronto na UI/URL. O backend ainda pode não estar filtrando de fato —
+          vamos conectar isso nos hooks/SQL no próximo passo.
+        </AlertDescription>
+      </Alert>
+
       {isLoading && <div className="text-sm text-muted-foreground">Carregando…</div>}
       {hasError && <div className="text-sm text-destructive">Erro ao carregar dados.</div>}
 
@@ -237,7 +264,11 @@ export default function ClicksDashboard() {
           {/* Filtros */}
           <div className="flex flex-col gap-3 rounded-2xl border border-black/10 p-4">
             <div className="flex flex-wrap gap-2">
-              <Button size="sm" variant={activeCategory === "all" ? "default" : "outline"} onClick={() => setActiveCategory("all")}>
+              <Button
+                size="sm"
+                variant={activeCategory === "all" ? "default" : "outline"}
+                onClick={() => setActiveCategory("all")}
+              >
                 Todas categorias
               </Button>
               {Object.entries(CATEGORY_LABELS).map(([key, label]) => (
@@ -278,218 +309,154 @@ export default function ClicksDashboard() {
               </label>
 
               <Badge variant="secondary">
-                Base: {activeCategory === "all" ? "todas" : CATEGORY_LABELS[activeCategory]} • {period}
+                Base: {activeCategory === "all" ? "todas" : CATEGORY_LABELS[activeCategory]} • {period} • {trafficLabel}
               </Badge>
             </div>
           </div>
 
-          {/* KPIs performance */}
+          {/* KPIs da janela */}
           <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
             <div className="rounded-2xl border border-black/10 p-4">
               <div className="text-sm text-muted-foreground">Views ({period})</div>
               <div className="text-2xl font-semibold">{windowViews}</div>
             </div>
+
             <div className="rounded-2xl border border-black/10 p-4">
-              <div className="text-sm text-muted-foreground">Cliques p/ comprar ({period})</div>
+              <div className="text-sm text-muted-foreground">Outbounds (/go) ({period})</div>
               <div className="text-2xl font-semibold">{windowOutbounds}</div>
             </div>
+
             <div className="rounded-2xl border border-black/10 p-4">
-              <div className="text-sm text-muted-foreground">Eficiência ponderada ({period})</div>
+              <div className="text-sm text-muted-foreground">Eficiência (outbound / views)</div>
               <div className="text-2xl font-semibold">{windowEfficiency}%</div>
               <div className="text-xs text-muted-foreground mt-1">
-                Eficiência = outbounds/views. Ponderada evita “enganos” com pouco tráfego.
+                Pode passar de 100% se houver outbounds “atrasados” (ex.: clique hoje em view de ontem) ou tráfego
+                in-app/redirect.
               </div>
             </div>
           </div>
 
-          {/* Rankings */}
           <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
-            {/* Top Eficiência */}
+            {/* TOP EFICIÊNCIA */}
             <div className="lg:col-span-6 rounded-2xl border border-black/10 p-4">
               <div className="flex items-center justify-between mb-3">
-                <div className="font-semibold">Top produtos — Eficiência</div>
-                <Badge variant="secondary">CRO</Badge>
+                <div className="font-semibold">Top eficiência — {period}</div>
+                <Badge variant="secondary">outbounds / views</Badge>
               </div>
 
               <div className="space-y-2">
                 {topEfficiency.length === 0 && (
-                  <div className="text-sm text-muted-foreground">
-                    Sem produtos com volume suficiente para ranking (ajuste “min views”).
-                  </div>
+                  <div className="text-sm text-muted-foreground">Sem produtos suficientes para ranquear nesta janela.</div>
                 )}
 
-                {topEfficiency.map((row, idx) => {
-                  const views = period === "24h" ? row.views_24h : row.views_7d
-                  const out = period === "24h" ? row.outbounds_24h : row.outbounds_7d
-                  const eff = period === "24h" ? row.efficiency_24h : row.efficiency_7d
-
+                {topEfficiency.map((r, idx) => {
+                  const eff = period === "24h" ? r.efficiency_24h : r.efficiency_7d
+                  const v = period === "24h" ? r.views_24h : r.views_7d
+                  const o = period === "24h" ? r.outbounds_24h : r.outbounds_7d
                   return (
-                    <div key={`eff-${row.product_id}`} className="flex items-center justify-between rounded-xl border border-black/10 px-3 py-2">
+                    <div
+                      key={`eff-${r.product_id}`}
+                      className="flex items-center justify-between rounded-xl border border-black/10 px-3 py-2"
+                    >
                       <div className="min-w-0">
                         <div className="text-sm font-medium truncate">
-                          #{idx + 1} {row.name}
+                          #{idx + 1} {r.name}
                         </div>
                         <div className="text-xs text-muted-foreground truncate">
-                          {row.category}/{row.slug}
-                        </div>
-                        <div className="text-[11px] text-muted-foreground">
-                          Views: <span className="text-foreground font-medium">{views ?? 0}</span> • Out:{" "}
-                          <span className="text-foreground font-medium">{out ?? 0}</span>
+                          {r.category}/{r.slug} • views: {v} • outbounds: {o}
                         </div>
                       </div>
-
-                      <div className="flex items-center gap-2">
-                        <div className="text-sm font-semibold tabular-nums">{(eff ?? 0).toFixed(2)}%</div>
-                        <Button asChild size="sm" variant="outline">
-                          <a href={`/product/${row.slug}`} target="_blank" rel="noreferrer">
-                            Abrir
-                          </a>
-                        </Button>
-                      </div>
+                      <div className="text-sm font-semibold">{Number(eff ?? 0).toFixed(2)}%</div>
                     </div>
                   )
                 })}
               </div>
             </div>
 
-            {/* Top Volume */}
+            {/* TOP VOLUME */}
             <div className="lg:col-span-6 rounded-2xl border border-black/10 p-4">
-              <div className="flex items-center justify-between mb-3 gap-2">
-                <div className="font-semibold">Top produtos — Volume</div>
+              <div className="flex items-center justify-between mb-3">
+                <div className="font-semibold">Top volume — {period}</div>
+                <Badge variant="secondary">{volumeMetric === "views" ? "views" : "outbounds"}</Badge>
+              </div>
 
-                <div className="flex items-center gap-2">
-                  {/* toggle do ranking */}
-                  <div className="flex rounded-lg border border-black/10 overflow-hidden">
-                    <button
-                      type="button"
-                      className={`px-2.5 py-1 text-[12px] ${volumeMetric === "outbounds" ? "bg-muted font-semibold" : "bg-background text-muted-foreground"}`}
-                      onClick={() => setVolumeMetric("outbounds")}
-                      title="Ordenar por cliques reais (/go)"
-                    >
-                      Out
-                    </button>
-                    <button
-                      type="button"
-                      className={`px-2.5 py-1 text-[12px] ${volumeMetric === "views" ? "bg-muted font-semibold" : "bg-background text-muted-foreground"}`}
-                      onClick={() => setVolumeMetric("views")}
-                      title="Ordenar por views na ProductPage"
-                    >
-                      Views
-                    </button>
-                  </div>
-
-                  <Badge variant="secondary">Escala</Badge>
-                </div>
+              <div className="flex gap-2 mb-3">
+                <Button
+                  size="sm"
+                  variant={volumeMetric === "outbounds" ? "default" : "outline"}
+                  onClick={() => setVolumeMetric("outbounds")}
+                >
+                  Outbounds
+                </Button>
+                <Button
+                  size="sm"
+                  variant={volumeMetric === "views" ? "default" : "outline"}
+                  onClick={() => setVolumeMetric("views")}
+                >
+                  Views
+                </Button>
               </div>
 
               <div className="space-y-2">
-                {topVolume.length === 0 && <div className="text-sm text-muted-foreground">Sem dados no período.</div>}
+                {topVolume.length === 0 && (
+                  <div className="text-sm text-muted-foreground">Sem dados para esta janela/filtro.</div>
+                )}
 
-                {topVolume.map((row, idx) => {
-                  const views = period === "24h" ? row.views_24h : row.views_7d
-                  const out = period === "24h" ? row.outbounds_24h : row.outbounds_7d
-                  const eff = period === "24h" ? row.efficiency_24h : row.efficiency_7d
-
+                {topVolume.map((r, idx) => {
+                  const v = period === "24h" ? r.views_24h : r.views_7d
+                  const o = period === "24h" ? r.outbounds_24h : r.outbounds_7d
+                  const eff = period === "24h" ? r.efficiency_24h : r.efficiency_7d
+                  const vol = getVolumeValue(r)
                   return (
-                    <div key={`vol-${row.product_id}`} className="flex items-center justify-between rounded-xl border border-black/10 px-3 py-2">
+                    <div
+                      key={`vol-${r.product_id}`}
+                      className="flex items-center justify-between rounded-xl border border-black/10 px-3 py-2"
+                    >
                       <div className="min-w-0">
                         <div className="text-sm font-medium truncate">
-                          #{idx + 1} {row.name}
+                          #{idx + 1} {r.name}
                         </div>
                         <div className="text-xs text-muted-foreground truncate">
-                          {row.category}/{row.slug}
+                          {r.category}/{r.slug} • views: {v} • outbounds: {o} • eff: {Number(eff ?? 0).toFixed(2)}%
                         </div>
                       </div>
-
-                      <div className="flex items-center gap-3">
-                        <div className="text-[11px] text-muted-foreground text-right">
-                          <div>
-                            Views: <span className="text-foreground font-semibold">{views ?? 0}</span>
-                          </div>
-                          <div>
-                            Out: <span className="text-foreground font-semibold">{out ?? 0}</span>
-                          </div>
-                          <div>
-                            Eff: <span className="text-foreground font-medium">{(eff ?? 0).toFixed(2)}%</span>
-                          </div>
-                        </div>
-                        <Button asChild size="sm" variant="outline">
-                          <a href={`/product/${row.slug}`} target="_blank" rel="noreferrer">
-                            Abrir
-                          </a>
-                        </Button>
-                      </div>
+                      <div className="text-sm font-semibold">{vol}</div>
                     </div>
                   )
                 })}
               </div>
-
-              <div className="text-xs text-muted-foreground mt-3">
-                {volumeMetric === "outbounds"
-                  ? "Ordenado por cliques reais (/go). Bom para descobrir o que monetiza."
-                  : "Ordenado por views. Bom para descobrir o que está chamando atenção (topo do funil)."}
-              </div>
             </div>
 
-            {/* Alertas */}
+            {/* ALERTAS */}
             <div className="lg:col-span-12 rounded-2xl border border-black/10 p-4">
               <div className="flex items-center justify-between mb-3">
-                <div className="font-semibold">Alertas — Muito view, pouco clique</div>
-                <Badge variant="secondary">Ação</Badge>
+                <div className="font-semibold">Alertas — eficiência &lt; {alertBelow}%</div>
+                <Badge variant="secondary">priorizar CRO</Badge>
               </div>
 
               <div className="space-y-2">
-                {alerts.length === 0 && (
-                  <div className="text-sm text-muted-foreground">
-                    Nenhum alerta no período. (Isso é bom.)
-                  </div>
-                )}
+                {alerts.length === 0 && <div className="text-sm text-muted-foreground">Nenhum alerta para os filtros atuais.</div>}
 
-                {alerts.map((row) => {
-                  const views = period === "24h" ? row.views_24h : row.views_7d
-                  const out = period === "24h" ? row.outbounds_24h : row.outbounds_7d
-                  const eff = period === "24h" ? row.efficiency_24h : row.efficiency_7d
+                {alerts.map((r) => {
+                  const v = period === "24h" ? r.views_24h : r.views_7d
+                  const o = period === "24h" ? r.outbounds_24h : r.outbounds_7d
+                  const eff = period === "24h" ? r.efficiency_24h : r.efficiency_7d
 
                   return (
                     <div
-                      key={`alert-${row.product_id}`}
-                      className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 rounded-xl border border-black/10 px-3 py-2"
+                      key={`alert-${r.product_id}`}
+                      className="flex items-center justify-between rounded-xl border border-black/10 px-3 py-2"
                     >
                       <div className="min-w-0">
-                        <div className="text-sm font-medium truncate">{row.name}</div>
+                        <div className="text-sm font-medium truncate">{r.name}</div>
                         <div className="text-xs text-muted-foreground truncate">
-                          {row.category}/{row.slug}
-                        </div>
-                        <div className="text-[11px] text-muted-foreground">
-                          Views: <span className="text-foreground font-semibold">{views ?? 0}</span> • Out:{" "}
-                          <span className="text-foreground font-semibold">{out ?? 0}</span> • Eff:{" "}
-                          <span className="text-foreground font-semibold">{(eff ?? 0).toFixed(2)}%</span>
+                          {r.category}/{r.slug} • views: {v} • outbounds: {o}
                         </div>
                       </div>
-
-                      <div className="flex items-center gap-2">
-                        <Button asChild size="sm" variant="outline">
-                          <a href={`/product/${row.slug}`} target="_blank" rel="noreferrer">
-                            Ver página
-                          </a>
-                        </Button>
-
-                        <Button size="sm" variant="secondary" onClick={() => copyToClipboard(row.slug)} title="Copiar slug">
-                          Copiar slug
-                        </Button>
-
-                        <Button size="sm" variant="outline" onClick={() => copyToClipboard(row.product_id)} title="Copiar ID">
-                          Copiar ID
-                        </Button>
-                      </div>
+                      <div className="text-sm font-semibold">{Number(eff ?? 0).toFixed(2)}%</div>
                     </div>
                   )
                 })}
-              </div>
-
-              <div className="mt-3 text-xs text-muted-foreground leading-relaxed">
-                Ações típicas: trocar primeira imagem, reescrever título (benefício claro), reduzir fricção no CTA,
-                ajustar oferta primária (loja/ordem), adicionar review/prova social.
               </div>
             </div>
           </div>
@@ -536,7 +503,10 @@ export default function ClicksDashboard() {
                 {funnelQuery.data.intent.top.map((row, idx) => {
                   const p = productsMap?.get(row.product_id)
                   return (
-                    <div key={`intent-${row.product_id}`} className="flex items-center justify-between rounded-xl border border-black/10 px-3 py-2">
+                    <div
+                      key={`intent-${row.product_id}`}
+                      className="flex items-center justify-between rounded-xl border border-black/10 px-3 py-2"
+                    >
                       <div className="min-w-0">
                         <div className="text-sm font-medium truncate">
                           #{idx + 1} {p?.name ?? row.product_id}
@@ -569,7 +539,10 @@ export default function ClicksDashboard() {
                 {funnelQuery.data.outbound.top.map((row, idx) => {
                   const p = productsMap?.get(row.product_id)
                   return (
-                    <div key={`outbound-${row.product_id}`} className="flex items-center justify-between rounded-xl border border-black/10 px-3 py-2">
+                    <div
+                      key={`outbound-${row.product_id}`}
+                      className="flex items-center justify-between rounded-xl border border-black/10 px-3 py-2"
+                    >
                       <div className="min-w-0">
                         <div className="text-sm font-medium truncate">
                           #{idx + 1} {p?.name ?? row.product_id}
@@ -599,7 +572,10 @@ export default function ClicksDashboard() {
                   <div className="text-sm text-muted-foreground">Sem dados no período.</div>
                 )}
                 {funnelQuery.data.intent.byStore.map((row) => (
-                  <div key={`intent-store-${row.store}`} className="flex items-center justify-between rounded-xl border border-black/10 px-3 py-2">
+                  <div
+                    key={`intent-store-${row.store}`}
+                    className="flex items-center justify-between rounded-xl border border-black/10 px-3 py-2"
+                  >
                     <div className="text-sm">{storeLabel(row.store)}</div>
                     <div className="text-sm font-semibold">{row.clicks}</div>
                   </div>
@@ -619,7 +595,10 @@ export default function ClicksDashboard() {
                   <div className="text-sm text-muted-foreground">Sem dados no período.</div>
                 )}
                 {funnelQuery.data.outbound.byStore.map((row) => (
-                  <div key={`outbound-store-${row.store}`} className="flex items-center justify-between rounded-xl border border-black/10 px-3 py-2">
+                  <div
+                    key={`outbound-store-${row.store}`}
+                    className="flex items-center justify-between rounded-xl border border-black/10 px-3 py-2"
+                  >
                     <div className="text-sm">{storeLabel(row.store)}</div>
                     <div className="text-sm font-semibold">{row.clicks}</div>
                   </div>

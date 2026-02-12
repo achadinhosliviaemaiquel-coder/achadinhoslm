@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from "react"
+import { useState, useEffect, useRef, useMemo } from "react"
 import { useForm, Controller } from "react-hook-form"
 import { zodResolver } from "@hookform/resolvers/zod"
 import { z } from "zod"
@@ -15,15 +15,6 @@ import { Loader2 } from "lucide-react"
 import BrandFormModal from "@/components/admin/BrandFormModal"
 import { getSupabase } from "@/integrations/supabase/client"
 import { useQueryClient } from "@tanstack/react-query"
-
-/**
- * ✅ IMPORTANTE (produção)
- * - Este ProductForm mantém o campo "URL do Produto (opcional)" (source_url),
- *   mas ele NÃO deve quebrar seu admin mesmo que a coluna ainda não exista no banco,
- *   porque o hook useCreateProduct/useUpdateProduct faz payload defensivo e ignora campos extras.
- *
- * - Quando você criar a coluna no Supabase, aí sim você pode passar a persistir source_url.
- */
 
 const SUBCATEGORY_OPTIONS: Record<string, { value: string; label: string; keywords: string[] }[]> = {
   beleza: [
@@ -95,14 +86,43 @@ const emptyNumberToNull = (v: unknown) => {
   return Number.isFinite(v as number) ? (v as number) : null
 }
 
+const normalizeUrlOrNull = (v: unknown): string | null => {
+  const s = String(v ?? "").trim()
+  if (!s) return null
+  if (/^https?:\/\//i.test(s)) return s
+  if (/^www\./i.test(s)) return `https://${s}`
+  if (/^[a-z0-9.-]+\.[a-z]{2,}\/?/i.test(s)) return `https://${s}`
+  return s
+}
+
+function formatBRLFromNumber(n: number) {
+  // mantém simples e previsível: "R$ 123,45"
+  return `R$ ${n.toFixed(2).replace(".", ",")}`
+}
+
+function computeMinPriceLabel(prices: Array<number | null | undefined>): string | null {
+  const valid = prices.filter((p): p is number => typeof p === "number" && Number.isFinite(p) && p > 0)
+  if (!valid.length) return null
+  const min = Math.min(...valid)
+  return formatBRLFromNumber(min)
+}
+
 async function resolveCategoryIdBySlug(categorySlug: string) {
   const supabase = getSupabase()
   if (!categorySlug || categorySlug === "all") return null
 
   const { data, error } = await supabase.from("categories").select("id").eq("slug", categorySlug).maybeSingle()
   if (error) throw error
+  if (data?.id) return data.id
 
-  return data?.id ?? null
+  const { data: created, error: cErr } = await supabase
+    .from("categories")
+    .insert({ slug: categorySlug, name: CATEGORY_LABELS[categorySlug as ProductCategory] ?? categorySlug })
+    .select("id")
+    .single()
+
+  if (cErr) throw cErr
+  return created?.id ?? null
 }
 
 const productSchema = z.object({
@@ -119,20 +139,22 @@ const productSchema = z.object({
   description: z.preprocess(emptyToNull, z.string().nullable().optional()),
   benefits: z.preprocess(emptyToNull, z.string().nullable().optional()),
 
-  price_label: z.string().min(1, "Preço (label) é obrigatório"),
+  // ✅ AGORA É AUTOMÁTICO / NÃO OBRIGATÓRIO
+  price_label: z.preprocess(emptyToNull, z.string().nullable().optional()),
+
   image_urls: z.preprocess(emptyToNull, z.string().nullable().optional()),
 
-  source_url: z.preprocess(emptyToNull, z.string().url().nullable().optional()),
+  source_url: z.preprocess(normalizeUrlOrNull, z.string().url().nullable().optional()),
 
   shopee_price: z.preprocess(emptyNumberToNull, z.number().nullable().optional()),
   mercadolivre_price: z.preprocess(emptyNumberToNull, z.number().nullable().optional()),
   amazon_price: z.preprocess(emptyNumberToNull, z.number().nullable().optional()),
 
-  shopee_link: z.preprocess(emptyToNull, z.string().url().nullable().optional()),
-  mercadolivre_link: z.preprocess(emptyToNull, z.string().url().nullable().optional()),
-  amazon_link: z.preprocess(emptyToNull, z.string().url().nullable().optional()),
+  shopee_link: z.preprocess(normalizeUrlOrNull, z.string().url().nullable().optional()),
+  mercadolivre_link: z.preprocess(normalizeUrlOrNull, z.string().url().nullable().optional()),
+  amazon_link: z.preprocess(normalizeUrlOrNull, z.string().url().nullable().optional()),
 
-  review_url: z.preprocess(emptyToNull, z.string().url().nullable().optional()),
+  review_url: z.preprocess(normalizeUrlOrNull, z.string().url().nullable().optional()),
 })
 
 type ProductFormData = z.infer<typeof productSchema>
@@ -151,33 +173,28 @@ export function ProductForm({ product, onSuccess }: Props) {
   const updateProduct = useUpdateProduct()
   const { toast } = useToast()
 
-  const { register, handleSubmit, setValue, watch, reset, control } =
-    useForm<ProductFormData>({
-      resolver: zodResolver(productSchema),
-      defaultValues: {
-        name: "",
-        slug: "",
-        category: "",
-        brand_slug: "generico",
-        subcategory: "",
-        description: "",
-        benefits: "",
-        image_urls: "",
-        price_label: "",
-        source_url: "",
-        shopee_link: "",
-        mercadolivre_link: "",
-        amazon_link: "",
-        shopee_price: null,
-        mercadolivre_price: null,
-        amazon_price: null,
-        review_url: "",
-      },
-    })
-
-  /* ================================
-     🔥 WATCHERS CRÍTICOS
-  ================================ */
+  const { register, handleSubmit, setValue, watch, reset, control } = useForm<ProductFormData>({
+    resolver: zodResolver(productSchema),
+    defaultValues: {
+      name: "",
+      slug: "",
+      category: "",
+      brand_slug: "generico",
+      subcategory: "",
+      description: "",
+      benefits: "",
+      image_urls: "",
+      price_label: "", // ✅ auto
+      source_url: "",
+      shopee_link: "",
+      mercadolivre_link: "",
+      amazon_link: "",
+      shopee_price: null,
+      mercadolivre_price: null,
+      amazon_price: null,
+      review_url: "",
+    },
+  })
 
   const shopeeLink = watch("shopee_link")
   const mlLink = watch("mercadolivre_link")
@@ -197,7 +214,6 @@ export function ProductForm({ product, onSuccess }: Props) {
 
   useEffect(() => {
     if (!product) return
-
     reset({
       name: (product as any)?.name ?? "",
       slug: (product as any)?.slug ?? "",
@@ -227,21 +243,30 @@ export function ProductForm({ product, onSuccess }: Props) {
 
   const handleNameChange = (value: string) => {
     if (!product) {
-      const slug = normalize(value)
-        .replace(/[^a-z0-9]+/g, "-")
-        .replace(/^-|-$/g, "")
+      const slug = normalize(value).replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "")
       setValue("slug", slug)
     }
   }
 
+  // ✅ AUTO: recalcula "price_label" a partir do menor preço
+  const shopeePrice = watch("shopee_price")
+  const mlPrice = watch("mercadolivre_price")
+  const amazonPrice = watch("amazon_price")
+
+  const autoPriceLabel = useMemo(() => {
+    return computeMinPriceLabel([shopeePrice ?? null, mlPrice ?? null, amazonPrice ?? null])
+  }, [shopeePrice, mlPrice, amazonPrice])
+
+  useEffect(() => {
+    // sempre mantém sincronizado no form
+    setValue("price_label", autoPriceLabel ?? "", { shouldDirty: true, shouldValidate: false })
+  }, [autoPriceLabel, setValue])
+
   const onSubmit = async (data: ProductFormData) => {
     setIsSubmitting(true)
-
     try {
       const resolvedCategoryId = await resolveCategoryIdBySlug(data.category)
-
-      const categoryId =
-        resolvedCategoryId ?? (product as any)?.category_id ?? (product as any)?.categoryId ?? null
+      const categoryId = resolvedCategoryId ?? (product as any)?.category_id ?? (product as any)?.categoryId ?? null
 
       if (!categoryId) {
         toast({
@@ -255,22 +280,22 @@ export function ProductForm({ product, onSuccess }: Props) {
       const benefitsArr = data.benefits ? data.benefits.split("\n").map((b) => b.trim()).filter(Boolean) : []
       const imagesArr = data.image_urls ? data.image_urls.split("\n").map((i) => i.trim()).filter(Boolean) : []
 
-      /**
-       * ✅ PONTO CRÍTICO (remover links):
-       * Mesmo que o hook useUpdateProduct filtre null internamente,
-       * aqui nós já garantimos que os campos importantes vão explícitos como null quando vazios.
-       */
+      // ✅ força o label calculado (100% automático)
+      const finalPriceLabel =
+        computeMinPriceLabel([data.shopee_price ?? null, data.mercadolivre_price ?? null, data.amazon_price ?? null]) ??
+        null
+
       const productData: any = {
         ...data,
-
         category_id: categoryId,
         category: data.category as ProductCategory,
-
         benefits: benefitsArr,
         image_urls: imagesArr,
         is_active: true,
 
-        // ✅ normalização explícita (vazio -> null)
+        // ✅ aqui: salva automático (ou null)
+        price_label: finalPriceLabel,
+
         source_url: data.source_url ?? null,
         review_url: data.review_url ?? null,
 
@@ -289,7 +314,6 @@ export function ProductForm({ product, onSuccess }: Props) {
         await createProduct.mutateAsync(productData)
       }
 
-      // ✅ garante que ao reabrir o modal você veja o dado atualizado (sem cache velho)
       await queryClient.invalidateQueries({
         predicate: (q) => Array.isArray(q.queryKey) && q.queryKey.some((k) => String(k).includes("products")),
       })
@@ -327,6 +351,7 @@ export function ProductForm({ product, onSuccess }: Props) {
   return (
     <>
       <form
+        noValidate
         onSubmit={handleSubmit(onSubmit, (errors) => {
           console.log("❌ Erros de validação do ProductForm:", errors)
           toast({
@@ -346,11 +371,36 @@ export function ProductForm({ product, onSuccess }: Props) {
 
         <Input {...register("slug")} placeholder="Slug" />
 
+        {/* ✅ A PARTIR DE (AUTO) */}
+        <div className="space-y-2">
+          <Label>A partir de (automático)</Label>
+          <Input
+            {...register("price_label")}
+            readOnly
+            className="opacity-80"
+            value={autoPriceLabel ?? ""}
+            placeholder="Calculado automaticamente pelo menor preço"
+          />
+          <p className="text-xs text-muted-foreground">
+            Este valor é calculado automaticamente pelo menor preço (Shopee/ML/Amazon).
+          </p>
+        </div>
+
         <div className="space-y-2">
           <Label>URL do Produto (opcional)</Label>
-          <Input type="url" {...register("source_url")} placeholder="https://..." />
+          <Input
+            type="text"
+            inputMode="url"
+            autoCapitalize="none"
+            autoCorrect="off"
+            spellCheck={false}
+            {...register("source_url", {
+              setValueAs: (v) => (normalizeUrlOrNull(v) ?? ""),
+            })}
+            placeholder="https://... ou www..."
+          />
           <p className="text-xs text-muted-foreground">
-            Opcional. Use para referência/SEO ou fonte do produto (não é o link de afiliado).
+            Opcional. Aceita link longo e também começando com <code>www.</code>
           </p>
         </div>
 
@@ -437,7 +487,6 @@ export function ProductForm({ product, onSuccess }: Props) {
 
         <Textarea {...register("description")} placeholder="Descrição" />
         <Textarea {...register("benefits")} placeholder="Benefícios (1 por linha)" />
-        <Input {...register("price_label")} placeholder="R$ 89,90" />
 
         <Label>URLs das imagens (1 por linha)</Label>
         <Textarea {...register("image_urls")} rows={3} />
@@ -445,27 +494,53 @@ export function ProductForm({ product, onSuccess }: Props) {
         <div className="space-y-4">
           <h2 className="font-semibold">Links de Afiliado</h2>
 
-          <Input {...register("shopee_link")} placeholder="Link Shopee" />
+          <Input
+            type="text"
+            inputMode="url"
+            autoCapitalize="none"
+            autoCorrect="off"
+            spellCheck={false}
+            {...register("shopee_link", { setValueAs: (v) => (normalizeUrlOrNull(v) ?? "") })}
+            placeholder="Link Shopee"
+          />
           <Input
             type="number"
             step="0.01"
-            {...register("shopee_price", { setValueAs: (v) => (v === "" ? null : Number(v)) })}
+            {...register("shopee_price", { setValueAs: (v) => (v === "" ? null : Number(String(v).replace(",", "."))) })}
             placeholder="Preço Shopee"
           />
 
-          <Input {...register("mercadolivre_link")} placeholder="Link Mercado Livre" />
+          <Input
+            type="text"
+            inputMode="url"
+            autoCapitalize="none"
+            autoCorrect="off"
+            spellCheck={false}
+            {...register("mercadolivre_link", { setValueAs: (v) => (normalizeUrlOrNull(v) ?? "") })}
+            placeholder="Link Mercado Livre"
+          />
           <Input
             type="number"
             step="0.01"
-            {...register("mercadolivre_price", { setValueAs: (v) => (v === "" ? null : Number(v)) })}
+            {...register("mercadolivre_price", {
+              setValueAs: (v) => (v === "" ? null : Number(String(v).replace(",", "."))),
+            })}
             placeholder="Preço Mercado Livre"
           />
 
-          <Input {...register("amazon_link")} placeholder="Link Amazon" />
+          <Input
+            type="text"
+            inputMode="url"
+            autoCapitalize="none"
+            autoCorrect="off"
+            spellCheck={false}
+            {...register("amazon_link", { setValueAs: (v) => (normalizeUrlOrNull(v) ?? "") })}
+            placeholder="Link Amazon"
+          />
           <Input
             type="number"
             step="0.01"
-            {...register("amazon_price", { setValueAs: (v) => (v === "" ? null : Number(v)) })}
+            {...register("amazon_price", { setValueAs: (v) => (v === "" ? null : Number(String(v).replace(",", "."))) })}
             placeholder="Preço Amazon"
           />
         </div>
@@ -473,9 +548,13 @@ export function ProductForm({ product, onSuccess }: Props) {
         <div className="space-y-2">
           <Label>Review (YouTube ou Instagram)</Label>
           <Input
-            type="url"
-            {...register("review_url")}
-            placeholder="https://www.youtube.com/... ou https://www.instagram.com/..."
+            type="text"
+            inputMode="url"
+            autoCapitalize="none"
+            autoCorrect="off"
+            spellCheck={false}
+            {...register("review_url", { setValueAs: (v) => (normalizeUrlOrNull(v) ?? "") })}
+            placeholder="https://... ou www..."
           />
           <p className="text-xs text-muted-foreground">Opcional. Ajuda quem está indeciso a comprar.</p>
         </div>

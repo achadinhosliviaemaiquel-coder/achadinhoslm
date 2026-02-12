@@ -9,6 +9,11 @@ import type { Product } from "@/types/product";
  * - Seu admin hoje grava apenas em "products".
  * - Seus crons (ml-resolve-sec / ml-prices) usam "store_offers".
  * - Este arquivo conecta os dois: ao criar/atualizar produto, ele cria/atualiza a oferta em store_offers.
+ *
+ * Fix aplicado:
+ * - syncMercadoLivreOffer NÃO derruba mais o save do produto.
+ * - syncMercadoLivreOffer não depende de SELECT (RLS pode esconder linhas existentes).
+ * - Evita 409 na maior parte dos casos e, quando ocorrer, ignora duplicidade.
  */
 
 const PRODUCT_SELECT_FIELDS = `
@@ -84,6 +89,18 @@ function extractMlExternalId(input?: string | null): string | null {
   return null;
 }
 
+/**
+ * ✅ Sync Mercado Livre -> store_offers
+ *
+ * Fix:
+ * - Não faz mais SELECT + INSERT (RLS pode esconder e gerar duplicidade).
+ * - Faz UPDATE direto por (product_id, platform).
+ * - Se não atualizou nada, tenta INSERT.
+ * - Se INSERT der duplicidade (409/unique_violation), ignora.
+ *
+ * Importante:
+ * - Esse sync é BEST-EFFORT: nunca deve impedir salvar produto.
+ */
 async function syncMercadoLivreOffer(params: {
   productId: string;
   mercadolivreLink: string | null;
@@ -95,23 +112,12 @@ async function syncMercadoLivreOffer(params: {
 
   // Se não tem link, desativa oferta (se existir)
   if (!params.mercadolivreLink) {
-    const { data: existing, error: selErr } = await supabase
+    await supabase
       .from("store_offers")
-      .select("id")
+      .update({ is_active: false, updated_at: new Date().toISOString() })
       .eq("product_id", params.productId)
-      .eq("platform", platform)
-      .maybeSingle();
+      .eq("platform", platform);
 
-    if (selErr) throw selErr;
-
-    if (existing?.id) {
-      const { error: upErr } = await supabase
-        .from("store_offers")
-        .update({ is_active: false })
-        .eq("id", existing.id);
-
-      if (upErr) throw upErr;
-    }
     return;
   }
 
@@ -120,37 +126,41 @@ async function syncMercadoLivreOffer(params: {
     extractMlExternalId(params.mercadolivreLink) ??
     null;
 
-  // Procura existente (product_id + platform)
-  const { data: existing, error: selErr } = await supabase
-    .from("store_offers")
-    .select("id")
-    .eq("product_id", params.productId)
-    .eq("platform", platform)
-    .maybeSingle();
-
-  if (selErr) throw selErr;
-
   const offerPayload: any = {
     product_id: params.productId,
     platform,
     url: params.mercadolivreLink,
     external_id: externalId,
     is_active: params.isActive ?? true,
+    updated_at: new Date().toISOString(),
   };
 
-  if (existing?.id) {
-    const { error: upErr } = await supabase
-      .from("store_offers")
-      .update(offerPayload)
-      .eq("id", existing.id);
+  // 1) tenta UPDATE direto (não depende de SELECT visível por RLS)
+  const { data: updated, error: upErr } = await supabase
+    .from("store_offers")
+    .update(offerPayload)
+    .eq("product_id", params.productId)
+    .eq("platform", platform)
+    .select("id");
 
-    if (upErr) throw upErr;
-  } else {
-    const { error: insErr } = await supabase
-      .from("store_offers")
-      .insert(offerPayload);
+  // Atualizou alguém => terminou
+  if (!upErr && Array.isArray(updated) && updated.length > 0) return;
 
-    if (insErr) throw insErr;
+  // 2) tenta INSERT, mas não derruba save se for duplicado
+  const { error: insErr } = await supabase.from("store_offers").insert(offerPayload);
+
+  if (insErr) {
+    const msg = String((insErr as any)?.message ?? (insErr as any)?.details ?? "").toLowerCase();
+    const code = String((insErr as any)?.code ?? "");
+
+    const isDuplicate =
+      code === "23505" ||
+      msg.includes("duplicate") ||
+      msg.includes("unique") ||
+      msg.includes("already exists");
+
+    if (!isDuplicate) throw insErr;
+    // duplicado => ok (best-effort)
   }
 }
 
@@ -256,7 +266,10 @@ export function useCreateProduct() {
         description: product.description ?? null,
         category: product.category ?? null,
         subcategory: product.subcategory ?? null,
-        brand_slug: product.brand_slug ?? null,
+
+        // ✅ sempre salva algo (evita categorias sem marca quebrando)
+        brand_slug: (product.brand_slug && String(product.brand_slug).trim()) ? product.brand_slug : "generico",
+
         image_urls: Array.isArray(product.image_urls) ? product.image_urls : [],
         benefits: Array.isArray(product.benefits) ? product.benefits : [],
         price_label: product.price_label ?? null,
@@ -281,13 +294,17 @@ export function useCreateProduct() {
 
       if (error) throw error;
 
-      // ✅ cria/atualiza store_offers para o cron pegar
-      await syncMercadoLivreOffer({
-        productId: data.id,
-        mercadolivreLink: data.mercadolivre_link ?? null,
-        sourceUrl: data.source_url ?? null,
-        isActive: data.is_active ?? true,
-      });
+      // ✅ BEST-EFFORT: nunca deixa store_offers quebrar o save
+      try {
+        await syncMercadoLivreOffer({
+          productId: data.id,
+          mercadolivreLink: data.mercadolivre_link ?? null,
+          sourceUrl: data.source_url ?? null,
+          isActive: data.is_active ?? true,
+        });
+      } catch (e) {
+        console.warn("store_offers sync failed (create):", e);
+      }
 
       return data as Product;
     },
@@ -317,7 +334,14 @@ export function useUpdateProduct() {
         description: updates.description ?? undefined,
         category: updates.category ?? undefined,
         subcategory: updates.subcategory ?? undefined,
-        brand_slug: updates.brand_slug ?? undefined,
+
+        // ✅ se vier vazio, salva generico
+        brand_slug:
+          updates.brand_slug === undefined
+            ? undefined
+            : (updates.brand_slug && String(updates.brand_slug).trim())
+              ? updates.brand_slug
+              : "generico",
 
         image_urls: Array.isArray(updates.image_urls) ? updates.image_urls : undefined,
         benefits: Array.isArray(updates.benefits) ? updates.benefits : undefined,
@@ -348,13 +372,17 @@ export function useUpdateProduct() {
 
       if (error) throw error;
 
-      // ✅ mantém store_offers sincronizado
-      await syncMercadoLivreOffer({
-        productId: data.id,
-        mercadolivreLink: data.mercadolivre_link ?? null,
-        sourceUrl: data.source_url ?? null,
-        isActive: data.is_active ?? true,
-      });
+      // ✅ BEST-EFFORT: nunca deixa store_offers quebrar o save
+      try {
+        await syncMercadoLivreOffer({
+          productId: data.id,
+          mercadolivreLink: data.mercadolivre_link ?? null,
+          sourceUrl: data.source_url ?? null,
+          isActive: data.is_active ?? true,
+        });
+      } catch (e) {
+        console.warn("store_offers sync failed (update):", e);
+      }
 
       return data as Product;
     },

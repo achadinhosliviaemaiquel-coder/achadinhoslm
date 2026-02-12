@@ -1,20 +1,31 @@
-import { Header } from './Header';
-import { Footer } from './Footer';
+import { Header } from "./Header";
+import { Footer } from "./Footer";
 import { Instagram, Youtube } from "lucide-react";
 import { ScrollToTop } from "@/components/ScrollToTop";
 import { Helmet } from "react-helmet-async";
 import { useLocation } from "react-router-dom";
 import { useEffect, useMemo } from "react";
+import { Analytics } from "@vercel/analytics/react";
 
 interface BreadcrumbItem {
   name: string;
-  url: string;
+  url: string; // pode ser "/x" ou absoluta
+}
+
+interface LayoutSeo {
+  title?: string;
+  description?: string;
+  ogImage?: string; // pode ser absoluta ou "/og.jpg"
+  canonical?: string; // pode ser absoluta ou "/product/slug"
+  noindex?: boolean;
+  ogType?: "website" | "product";
 }
 
 interface LayoutProps {
   children: React.ReactNode;
   showFooter?: boolean;
   breadcrumb?: BreadcrumbItem[];
+  seo?: LayoutSeo;
 }
 
 // ✅ evita crash caso algum dia rode em ambiente sem window (ou testes)
@@ -24,17 +35,41 @@ function getBaseUrlSafe() {
     if (host.includes("vercel.app")) return "https://achadinhoslm.vercel.app";
     return "https://achadinhoslm.com.br";
   } catch {
-    // fallback (build/test)
     return "https://achadinhoslm.com.br";
   }
 }
 
-export function Layout({ children, showFooter = true, breadcrumb = [] }: LayoutProps) {
+function stripTrailingSlash(u: string) {
+  return u.endsWith("/") ? u.slice(0, -1) : u;
+}
+
+function toAbsoluteUrl(base: string, pathOrUrl?: string) {
+  const v = (pathOrUrl || "").trim();
+  if (!v) return "";
+  if (/^https?:\/\//i.test(v)) return v;
+
+  const b = stripTrailingSlash(base);
+  const p = v.startsWith("/") ? v : `/${v}`;
+  return `${b}${p}`;
+}
+
+export function Layout({ children, showFooter = true, breadcrumb = [], seo }: LayoutProps) {
   const location = useLocation();
 
   const BASE_URL = useMemo(() => getBaseUrlSafe(), []);
-  const fullPath = `${location.pathname}${location.search || ""}`; // ✅ inclui ?q=...
-  const canonicalUrl = `${BASE_URL}${fullPath}`;
+
+  // ✅ padrão: canonical SEM querystring (evita duplicação por utm/ref/etc)
+  const canonicalPathDefault = location.pathname;
+
+  // canonical: se vier via seo.canonical, pode ser "/x" ou absoluta
+  const canonicalUrl = seo?.canonical
+    ? toAbsoluteUrl(BASE_URL, seo.canonical)
+    : toAbsoluteUrl(BASE_URL, canonicalPathDefault);
+
+  const title = seo?.title || "Achadinhos LM & Promoções";
+  const description = seo?.description || "Ofertas da Shopee, Amazon e Mercado Livre todos os dias.";
+  const ogImage = seo?.ogImage ? toAbsoluteUrl(BASE_URL, seo.ogImage) : toAbsoluteUrl(BASE_URL, "/og-home.jpg");
+  const ogType = seo?.ogType || "website";
 
   const breadcrumbSchema =
     breadcrumb.length > 0
@@ -45,7 +80,7 @@ export function Layout({ children, showFooter = true, breadcrumb = [] }: LayoutP
             "@type": "ListItem",
             position: index + 1,
             name: item.name,
-            item: `${BASE_URL}${item.url}`,
+            item: toAbsoluteUrl(BASE_URL, item.url),
           })),
         }
       : null;
@@ -57,7 +92,7 @@ export function Layout({ children, showFooter = true, breadcrumb = [] }: LayoutP
     url: BASE_URL,
     potentialAction: {
       "@type": "SearchAction",
-      target: `${BASE_URL}/search?q={search_term_string}`,
+      target: `${stripTrailingSlash(BASE_URL)}/search?q={search_term_string}`,
       "query-input": "required name=search_term_string",
     },
   };
@@ -76,12 +111,14 @@ export function Layout({ children, showFooter = true, breadcrumb = [] }: LayoutP
 
   // ⭐ GA4 — rastrear mudança de rota (inclui querystring)
   useEffect(() => {
-    if (window.gtag) {
-      window.gtag('config', 'G-L8J2YZRFFP', {
-        page_path: fullPath,
-      });
+    const fullPath = `${location.pathname}${location.search || ""}`;
+    if ((window as any).gtag) {
+      (window as any).gtag("config", "G-L8J2YZRFFP", { page_path: fullPath });
     }
-  }, [fullPath]);
+  }, [location.pathname, location.search]);
+
+  // ✅ evita poluir Vercel Analytics com rotas internas do admin
+  const isAdmin = location.pathname.startsWith("/admin");
 
   return (
     <div className="min-h-screen flex flex-col bg-background">
@@ -89,50 +126,49 @@ export function Layout({ children, showFooter = true, breadcrumb = [] }: LayoutP
         <html lang="pt-BR" />
         <meta charSet="utf-8" />
         <meta name="viewport" content="width=device-width, initial-scale=1" />
-        <meta name="robots" content="index, follow, max-image-preview:large" />
+
+        {/* ✅ Title/Description reais */}
+        <title>{title}</title>
+        <meta name="description" content={description} />
+
+        <meta name="robots" content={seo?.noindex ? "noindex, nofollow" : "index, follow, max-image-preview:large"} />
         <meta name="theme-color" content="#ffffff" />
         <link rel="canonical" href={canonicalUrl} />
 
-        {/* ===== Open Graph GLOBAL ===== */}
+        {/* Open Graph */}
         <meta property="og:site_name" content="Achadinhos LM" />
         <meta property="og:locale" content="pt_BR" />
-        <meta property="og:type" content="website" />
+        <meta property="og:type" content={ogType} />
         <meta property="og:url" content={canonicalUrl} />
-        <meta property="og:title" content="Achadinhos LM & Promoções" />
-        <meta property="og:description" content="Ofertas da Shopee, Amazon e Mercado Livre todos os dias." />
-        <meta property="og:image" content={`${BASE_URL}/og-home.jpg`} />
+        <meta property="og:title" content={title} />
+        <meta property="og:description" content={description} />
+        <meta property="og:image" content={ogImage} />
         <meta property="og:image:width" content="1200" />
         <meta property="og:image:height" content="630" />
 
-        {/* ===== Twitter ===== */}
+        {/* Twitter */}
         <meta name="twitter:card" content="summary_large_image" />
-        <meta name="twitter:title" content="Achadinhos LM & Promoções" />
-        <meta name="twitter:description" content="Ofertas da Shopee, Amazon e Mercado Livre todos os dias." />
-        <meta name="twitter:image" content={`${BASE_URL}/og-home.jpg`} />
+        <meta name="twitter:title" content={title} />
+        <meta name="twitter:description" content={description} />
+        <meta name="twitter:image" content={ogImage} />
 
-        {/* ===== Schemas ===== */}
-        <script type="application/ld+json">
-          {JSON.stringify(websiteSchema)}
-        </script>
-        <script type="application/ld+json">
-          {JSON.stringify(organizationSchema)}
-        </script>
+        {/* Schemas */}
+        <script type="application/ld+json">{JSON.stringify(websiteSchema)}</script>
+        <script type="application/ld+json">{JSON.stringify(organizationSchema)}</script>
+        {breadcrumbSchema ? <script type="application/ld+json">{JSON.stringify(breadcrumbSchema)}</script> : null}
 
-        {breadcrumbSchema && (
-          <script type="application/ld+json">
-            {JSON.stringify(breadcrumbSchema)}
-          </script>
-        )}
-
-        {/* ===== GA4 ===== */}
-        <script async src="https://www.googletagmanager.com/gtag/js?id=G-L8J2YZRFFP"></script>
-        <script>
+        {/* GA4
+            ✅ dica go-live: ideal mover para index.html do Vite pra não duplicar.
+            Aqui mantemos com keys pra reduzir chance de duplicação em re-render.
+        */}
+        <script key="ga4-lib" async src="https://www.googletagmanager.com/gtag/js?id=G-L8J2YZRFFP" />
+        <script key="ga4-init">
           {`
             window.dataLayer = window.dataLayer || [];
             function gtag(){dataLayer.push(arguments);}
-            window.gtag = gtag;
-            gtag('js', new Date());
-            gtag('config', 'G-L8J2YZRFFP');
+            window.gtag = window.gtag || gtag;
+            window.gtag('js', new Date());
+            window.gtag('config', 'G-L8J2YZRFFP');
           `}
         </script>
       </Helmet>
@@ -140,9 +176,7 @@ export function Layout({ children, showFooter = true, breadcrumb = [] }: LayoutP
       <ScrollToTop />
       <Header />
 
-      <main className="flex-1 w-full max-w-[1000px] mx-auto px-4 sm:px-6 lg:px-8 py-6">
-        {children}
-      </main>
+      <main className="flex-1 w-full max-w-[1000px] mx-auto px-4 sm:px-6 lg:px-8 py-6">{children}</main>
 
       <div className="flex justify-center gap-6 py-6 text-muted-foreground">
         <a
@@ -176,6 +210,9 @@ export function Layout({ children, showFooter = true, breadcrumb = [] }: LayoutP
       </div>
 
       {showFooter && <Footer />}
+
+      {/* ✅ Vercel Web Analytics (produção). Evita admin para não poluir. */}
+      {!isAdmin && <Analytics />}
     </div>
   );
 }

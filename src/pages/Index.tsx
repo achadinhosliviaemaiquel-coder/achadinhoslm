@@ -1,31 +1,35 @@
-import { Layout } from '@/components/Layout'
-import { ProductCard } from '@/components/ProductCard'
-import { CategoryCard } from '@/components/CategoryCard'
-import { useFeaturedProducts } from '@/hooks/useFeaturedProducts'
-import { CATEGORY_LABELS, type ProductCategory } from '@/types/product'
-import { Skeleton } from '@/components/ui/skeleton'
+import { Layout } from "@/components/Layout";
+import { ProductCard } from "@/components/ProductCard";
+import { CategoryCard } from "@/components/CategoryCard";
+import { useFeaturedProducts } from "@/hooks/useFeaturedProducts";
+import { CATEGORY_LABELS, type ProductCategory } from "@/types/product";
+import { Skeleton } from "@/components/ui/skeleton";
 import {
   Carousel,
   CarouselContent,
   CarouselItem,
   CarouselNext,
   CarouselPrevious,
-} from "@/components/ui/carousel"
-import { Helmet } from "react-helmet-async"
+} from "@/components/ui/carousel";
 
-const CATEGORIES = (Object.keys(CATEGORY_LABELS) as ProductCategory[])
-  .sort((a, b) => CATEGORY_LABELS[a].localeCompare(CATEGORY_LABELS[b]))
+const CATEGORIES = (Object.keys(CATEGORY_LABELS) as ProductCategory[]).sort((a, b) =>
+  CATEGORY_LABELS[a].localeCompare(CATEGORY_LABELS[b])
+);
 
 const WhatsAppIcon = () => (
   <svg width="22" height="22" viewBox="0 0 32 32" fill="currentColor">
     <path d="M16 .4C7.4.4.4 7.4.4 16c0 2.8.7 5.6 2.1 8L.3 31.7l7.9-2.1c2.3 1.3 5 2 7.8 2 8.6 0 15.6-7 15.6-15.6S24.6.4 16 .4zm0 28.5c-2.4 0-4.7-.6-6.7-1.8l-.5-.3-4.7 1.3 1.3-4.6-.3-.5C3.8 20.8 3.2 18.5 3.2 16 3.2 9.2 9.2 3.2 16 3.2S28.8 9.2 28.8 16 22.8 28.9 16 28.9zm7.2-9.6c-.4-.2-2.3-1.1-2.7-1.2-.4-.1-.6-.2-.9.2s-1 1.2-1.2 1.4c-.2.2-.4.3-.8.1-.4-.2-1.6-.6-3-1.8-1.1-1-1.8-2.2-2-2.6-.2-.4 0-.6.2-.8.2-.2.4-.4.6-.7.2-.3.3-.5.4-.8.1-.3 0-.6 0-.8 0-.2-.9-2.2-1.2-3-.3-.8-.6-.7-.9-.7h-.8c-.3 0-.8.1-1.2.6-.4.5-1.5 1.4-1.5 3.4s1.6 3.9 1.8 4.2c.2.3 3.1 4.8 7.6 6.7 1.1.5 1.9.7 2.5.9 1 .3 1.9.3 2.6.2.8-.1 2.3-.9 2.6-1.8.3-.9.3-1.7.2-1.8-.1-.1-.3-.2-.7-.4z" />
   </svg>
-)
+);
 
-function ChannelButton({ href, bg, children }: {
-  href: string
-  bg: string
-  children: React.ReactNode
+function ChannelButton({
+  href,
+  bg,
+  children,
+}: {
+  href: string;
+  bg: string;
+  children: React.ReactNode;
 }) {
   return (
     <a
@@ -36,32 +40,28 @@ function ChannelButton({ href, bg, children }: {
     >
       {children}
     </a>
-  )
+  );
 }
 
 export default function Index() {
-  const { data: products, isLoading } = useFeaturedProducts(6)
+  const { data: products, isLoading } = useFeaturedProducts(6);
 
   return (
-    <Layout>
-      <Helmet>
-        <title>Achadinhos e Promoções da Shopee, Amazon e Mercado Livre | Achadinhos LM</title>
-        <meta
-          name="description"
-          content="Encontre achadinhos, promoções e produtos baratos da Shopee, Amazon e Mercado Livre. Ofertas de beleza, casa, eletrônicos, moda e suplementos com preços baixos."
-        />
-      </Helmet>
-
+    <Layout
+      seo={{
+        title: "Achadinhos e Promoções da Shopee, Amazon e Mercado Livre | Achadinhos LM",
+        description:
+          "Encontre achadinhos, promoções e produtos baratos da Shopee, Amazon e Mercado Livre. Ofertas de beleza, casa, eletrônicos, moda e suplementos com preços baixos.",
+        canonical: "/",
+        ogImage: "/og-home.jpg",
+        ogType: "website",
+      }}
+    >
       <div className="space-y-10">
-
         {/* HERO */}
         <section className="text-center space-y-3 animate-fade-in max-w-[820px] mx-auto">
-          <h1 className="text-2xl font-bold">
-            Achadinhos e Promoções Imperdíveis da Shopee, Amazon e Mercado Livre
-          </h1>
-          <p className="text-muted-foreground">
-            Ofertas atualizadas com preços baixos todos os dias.
-          </p>
+          <h1 className="text-2xl font-bold">Achadinhos e Promoções Imperdíveis da Shopee, Amazon e Mercado Livre</h1>
+          <p className="text-muted-foreground">Ofertas atualizadas com preços baixos todos os dias.</p>
         </section>
 
         {/* CANAIS */}
@@ -82,7 +82,6 @@ export default function Index() {
             </svg>
             Canal de ofertas no Telegram
           </ChannelButton>
-
         </section>
 
         {/* CATEGORIAS */}
@@ -98,9 +97,7 @@ export default function Index() {
         {/* MAIS VISTOS */}
         <section className="space-y-4">
           <h2 className="text-lg font-semibold text-foreground">🔥 Em alta</h2>
-          <p className="text-sm text-muted-foreground">
-            Produtos que mais geraram cliques para comprar nos últimos 7 dias.
-          </p>
+          <p className="text-sm text-muted-foreground">Produtos que mais geraram cliques para comprar nos últimos 7 dias.</p>
 
           {isLoading ? (
             <div className="flex gap-4 overflow-hidden">
@@ -130,7 +127,6 @@ export default function Index() {
                 <CarouselNext />
               </div>
             </Carousel>
-
           ) : (
             <div className="text-center py-12 space-y-4">
               <span className="text-4xl">📦</span>
@@ -143,12 +139,11 @@ export default function Index() {
 
         {/* TEXTO SEO NO FINAL */}
         <section className="text-sm text-muted-foreground leading-relaxed max-w-3xl mx-auto text-center pt-10">
-          O Achadinhos LM reúne promoções e produtos baratos da Shopee, Amazon e Mercado Livre.
-          Aqui você encontra achadinhos de beleza, casa, moda, eletrônicos e suplementos com preços que valem a pena.
-          Selecionamos ofertas reais para facilitar sua busca por descontos.
+          O Achadinhos LM reúne promoções e produtos baratos da Shopee, Amazon e Mercado Livre. Aqui você encontra achadinhos
+          de beleza, casa, moda, eletrônicos e suplementos com preços que valem a pena. Selecionamos ofertas reais para
+          facilitar sua busca por descontos.
         </section>
-
       </div>
     </Layout>
-  )
+  );
 }

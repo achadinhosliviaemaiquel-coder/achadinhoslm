@@ -390,7 +390,10 @@ function parseNumberLoose(v: unknown): number | null {
   if (typeof v === "number" && Number.isFinite(v)) return v;
   if (typeof v !== "string") return null;
 
-  let s = v.replace(/\s+/g, " ").replace(/[R$\u00A0]/g, "").trim();
+  let s = v
+    .replace(/\s+/g, " ")
+    .replace(/[R$\u00A0]/g, "")
+    .trim();
 
   const hasComma = s.includes(",");
   const hasDot = s.includes(".");
@@ -576,7 +579,7 @@ function extractPriceFromHtml(html: string) {
         original: found.original,
         currency: found.currency ?? "BRL",
         evidence: "jsonld" as const,
-        evidence_detail: found.detail as const,
+        evidence_detail: String(found.detail),
       };
     }
   }
@@ -822,11 +825,13 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const { data: imports, error: impErr } = await supabase
       .from("ml_link_import")
       .select("product_id, sec_url");
-    if (impErr) throw new Error(`DB read ml_link_import error: ${impErr.message}`);
+    if (impErr)
+      throw new Error(`DB read ml_link_import error: ${impErr.message}`);
 
     const secByProduct = new Map<string, string>();
     for (const row of (imports ?? []) as ImportRow[]) {
-      if (row.product_id && row.sec_url) secByProduct.set(row.product_id, row.sec_url);
+      if (row.product_id && row.sec_url)
+        secByProduct.set(row.product_id, row.sec_url);
     }
 
     let offset = 0;
@@ -841,7 +846,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         .order("id", { ascending: true })
         .range(offset, offset + BATCH_SIZE - 1);
 
-      if (error) throw new Error(`DB read store_offers error: ${error.message}`);
+      if (error)
+        throw new Error(`DB read store_offers error: ${error.message}`);
       if (!offers || offers.length === 0) break;
 
       const filtered = (offers as StoreOffer[]).filter((o) => {
@@ -851,7 +857,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       });
 
       job.scanned += filtered.length;
-      log(`Batch offset=${offset} offers=${offers.length} filtered=${filtered.length}`);
+      log(
+        `Batch offset=${offset} offers=${offers.length} filtered=${filtered.length}`,
+      );
 
       const { errors: poolErrors } = await runPool(
         filtered,
@@ -884,7 +892,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             return true;
           });
 
-          log(`Candidates id=${offer.id} ext=${label} count=${candidateUrls.length}`);
+          log(
+            `Candidates id=${offer.id} ext=${label} count=${candidateUrls.length}`,
+          );
 
           let bestHtml: string | null = null;
           let bestFinalUrl: string | null = null;
@@ -906,7 +916,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
             const anyRes = pageRes as any;
             const finalUrl =
-              typeof anyRes.url === "string" && anyRes.url ? anyRes.url : fetchUrl;
+              typeof anyRes.url === "string" && anyRes.url
+                ? anyRes.url
+                : fetchUrl;
 
             if (!pageRes.ok) continue;
 
@@ -920,7 +932,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
             const extracted = extractPriceFromHtml(html);
 
-            if (!hasStrongPrice(extracted) && looksLikeLoginOrBot(html, finalUrl)) {
+            if (
+              !hasStrongPrice(extracted) &&
+              looksLikeLoginOrBot(html, finalUrl)
+            ) {
               if (isSocialProfile) {
                 log(
                   `Ignoring social-profile gate ext=${label} title=${title ?? "n/a"} url=${finalUrl}`,
@@ -1050,7 +1065,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         job.failed += poolErrors.length;
         if (!lastErrorSample) {
           lastErrorSample = String(
-            poolErrors[0] instanceof Error ? poolErrors[0].message : poolErrors[0],
+            poolErrors[0] instanceof Error
+              ? poolErrors[0].message
+              : poolErrors[0],
           ).slice(0, 500);
         }
       }

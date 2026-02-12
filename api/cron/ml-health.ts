@@ -1,6 +1,6 @@
 import "dotenv/config";
 import type { VercelRequest, VercelResponse } from "@vercel/node";
-import { createClient } from "@supabase/supabase-js";
+import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 import crypto from "crypto";
 
 const SUPABASE_URL = process.env.SUPABASE_URL!;
@@ -43,7 +43,7 @@ function normalizeCookieHeader(cookie: string) {
   return s;
 }
 
-async function getGlobalCookie(supabase: ReturnType<typeof createClient>): Promise<string | null> {
+async function getGlobalCookie(supabase: SupabaseClient): Promise<string | null> {
   const { data, error } = await supabase
     .from("affiliate_ml_settings")
     .select("cookie_encrypted, updated_at")
@@ -144,7 +144,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       });
     }
 
-    // Pega 1 offer ativo
     const { data: offer, error: offErr } = await supabase
       .from("store_offers")
       .select("id, external_id, url")

@@ -2,6 +2,7 @@ import { Button } from "@/components/ui/button"
 import { ExternalLink } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { trackBuyClick } from "@/lib/clickTracking"
+import React from "react"
 
 type Store = "shopee" | "mercadolivre" | "amazon"
 
@@ -17,6 +18,7 @@ interface StoreButtonProps {
   showExternalIcon?: boolean
   isPrimary?: boolean
   overrideLabel?: string
+  disabled?: boolean
 }
 
 const STORE_UI: Record<
@@ -55,12 +57,6 @@ function resolveCtaLabel(opts: { storeShort: string; price?: number; isPrimary?:
   return hasValidPrice ? `Ver na ${storeShort}` : `Ver oferta na ${storeShort}`
 }
 
-function toPriceCents(price?: number) {
-  if (typeof price !== "number" || !Number.isFinite(price) || price <= 0) return null
-  // arredonda para evitar problemas tipo 49.9900000003
-  return Math.round(price * 100)
-}
-
 export function StoreButton({
   store,
   productId,
@@ -73,27 +69,19 @@ export function StoreButton({
   showExternalIcon = false,
   isPrimary = false,
   overrideLabel,
+  disabled,
 }: StoreButtonProps) {
   const ui = STORE_UI[store]
-  const isDisabled = !href || href === "#"
+  const isDisabled = disabled || !href || href === "#"
   const label = overrideLabel || resolveCtaLabel({ storeShort: ui.short, price, isPrimary })
 
-  const navigateOnce = () => {
-    if (target === "_blank") {
-      window.open(href, "_blank", "noopener,noreferrer")
+  const handleClick = (e: React.MouseEvent<HTMLAnchorElement>) => {
+    if (isDisabled) {
+      e.preventDefault()
       return
     }
-    window.location.assign(href)
-  }
 
-  const handleClick = (e: React.MouseEvent<HTMLAnchorElement>) => {
-    e.preventDefault()
-    if (isDisabled) return
-
-    const priceCents = toPriceCents(price)
-
-    // ✅ Track only (GA + intent). Não deve navegar.
-    // IMPORTANT: manda price_cents para evitar bug de "39.90" virar "399"
+    // ✅ Track intent (best-effort). Não bloquear navegação.
     try {
       trackBuyClick({
         productId,
@@ -107,13 +95,7 @@ export function StoreButton({
     } catch {
       // no-op
     }
-
-    if (target === "_blank") {
-      navigateOnce()
-      return
-    }
-
-    window.setTimeout(navigateOnce, 80)
+    // ✅ deixa o navegador navegar normalmente para o href (que deve ser /api/go?...)
   }
 
   return (
@@ -130,8 +112,9 @@ export function StoreButton({
     >
       <a
         href={isDisabled ? undefined : href}
+        target={target}
         onClick={handleClick}
-        rel={target === "_blank" ? "noopener noreferrer" : undefined}
+        rel={target === "_blank" ? "noopener noreferrer nofollow sponsored" : "nofollow sponsored"}
         aria-label={`${label} (abre ${target === "_blank" ? "em nova aba" : "na mesma aba"})`}
       >
         {label}

@@ -1,4 +1,4 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="pt-BR">
   <head>
     <meta charset="UTF-8" />
@@ -8,20 +8,25 @@
     />
     <meta name="theme-color" content="#ec4899" />
 
-    <!-- Google Analytics (GA4) -->
-    <script async src="https://www.googletagmanager.com/gtag/js?id=%VITE_GA_ID%"></script>
-    <script>
-      window.dataLayer = window.dataLayer || [];
-      function gtag(){dataLayer.push(arguments);}
-      gtag('js', new Date());
-      gtag('config', '%VITE_GA_ID%', {
-        anonymize_ip: true,
-        send_page_view: true
-      });
-    </script>
+    <!-- Performance (recomendado) -->
+    <link rel="preconnect" href="https://www.googletagmanager.com" />
+    <link rel="dns-prefetch" href="https://www.googletagmanager.com" />
+    <link rel="preconnect" href="https://www.google-analytics.com" />
+    <link rel="dns-prefetch" href="https://www.google-analytics.com" />
+
+    <!-- SEO básico -->
+    <meta
+      name="robots"
+      content="index,follow,max-image-preview:large,max-snippet:-1,max-video-preview:-1"
+    />
+    <meta
+      name="googlebot"
+      content="index,follow,max-image-preview:large,max-snippet:-1,max-video-preview:-1"
+    />
 
     <!-- SEO PRINCIPAL -->
     <title>Achadinhos LM: Promoções Shopee, Amazon e Mercado Livre</title>
+
     <meta
       name="description"
       content="Achadinhos LM reúne promoções e ofertas da Shopee, Amazon e Mercado Livre. Encontre produtos com preço baixo em beleza, casa, eletrônicos, moda e muito mais."
@@ -30,7 +35,7 @@
       name="keywords"
       content="ofertas, promoções, desconto, shopee, mercado livre, amazon, achadinhos, beleza, casa, eletrônicos, moda, cupons"
     />
-    <link rel="canonical" href="https://achadinhoslm.vercel.app/" />
+    <link rel="canonical" href="https://achadinhoslm.com.br/" />
 
     <!-- OPEN GRAPH -->
     <meta property="og:type" content="website" />
@@ -44,13 +49,17 @@
       property="og:description"
       content="Promoções e ofertas da Shopee, Amazon e Mercado Livre. Achadinhos com preço baixo em beleza, casa, eletrônicos e moda."
     />
-    <meta property="og:url" content="https://achadinhoslm.vercel.app/" />
+    <meta property="og:url" content="https://achadinhoslm.com.br/" />
     <meta
       property="og:image"
-      content="https://achadinhoslm.vercel.app/og-home.jpg"
+      content="https://achadinhoslm.com.br/og-home.jpg"
     />
     <meta property="og:image:width" content="1200" />
     <meta property="og:image:height" content="630" />
+    <meta
+      property="og:image:alt"
+      content="Achadinhos LM - Promoções Shopee, Amazon e Mercado Livre"
+    />
 
     <!-- TWITTER -->
     <meta name="twitter:card" content="summary_large_image" />
@@ -64,7 +73,11 @@
     />
     <meta
       name="twitter:image"
-      content="https://achadinhoslm.vercel.app/og-home.jpg"
+      content="https://achadinhoslm.com.br/og-home.jpg"
+    />
+    <meta
+      name="twitter:image:alt"
+      content="Achadinhos LM - Promoções Shopee, Amazon e Mercado Livre"
     />
 
     <!-- Favicon -->

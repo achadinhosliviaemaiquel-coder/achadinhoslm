@@ -9,9 +9,10 @@ import { trackProductView } from "@/lib/analytics"
 import { CATEGORY_LABELS } from "@/types/product"
 import { ChevronLeft, Check, AlertCircle } from "lucide-react"
 import { formatCurrency } from "@/lib/utils"
-import { Helmet } from "react-helmet-async"
 import { useProductMetrics } from "@/hooks/useProductMetrics"
 import { StoreButton } from "@/components/StoreButton"
+import { Helmet } from "react-helmet-async"
+import { seedTrafficCtxFromUrl } from "@/lib/clickTracking"
 
 // ----------------- price helpers -----------------
 function parsePrice(label: string) {
@@ -41,17 +42,14 @@ function parsePrice(label: string) {
   // - "533.99" => decimal
   // - "1.234"  => milhar (remove pontos)
   if (hasDot && !hasComma) {
-    // se termina com .dd, assume decimal
     if (/\.\d{2}$/.test(cleaned)) {
       const n = Number(cleaned)
       return Number.isFinite(n) ? n : NaN
     }
-    // senão, assume separador de milhar
     const n = Number(cleaned.replace(/\./g, ""))
     return Number.isFinite(n) ? n : NaN
   }
 
-  // Só dígitos
   const n = Number(cleaned)
   return Number.isFinite(n) ? n : NaN
 }
@@ -148,7 +146,7 @@ function getOrCreateSessionId() {
  * Escolhe o melhor CTA com base nos preços manuais já cadastrados no admin:
  * products.{shopee_price, mercadolivre_price, amazon_price} + links correspondentes.
  * - menor preço ganha
- * - desempate por prioridade (Amazon > Mercado Livre > Shopee), consistente com seus secundários
+ * - desempate por prioridade (Amazon > Mercado Livre > Shopee)
  */
 function pickBestManualOffer(product: any): { store: Offer["store"]; price: number; url: string } | null {
   if (!product) return null
@@ -159,10 +157,12 @@ function pickBestManualOffer(product: any): { store: Offer["store"]; price: numb
   const mlPrice = toPriceNumber(product?.mercadolivre_price)
   const amzPrice = toPriceNumber(product?.amazon_price)
 
-  if (product?.amazon_link && amzPrice && amzPrice > 0) candidates.push({ store: "amazon", price: amzPrice, url: product.amazon_link, priority: 0 })
+  if (product?.amazon_link && amzPrice && amzPrice > 0)
+    candidates.push({ store: "amazon", price: amzPrice, url: product.amazon_link, priority: 0 })
   if (product?.mercadolivre_link && mlPrice && mlPrice > 0)
     candidates.push({ store: "mercadolivre", price: mlPrice, url: product.mercadolivre_link, priority: 1 })
-  if (product?.shopee_link && shopeePrice && shopeePrice > 0) candidates.push({ store: "shopee", price: shopeePrice, url: product.shopee_link, priority: 2 })
+  if (product?.shopee_link && shopeePrice && shopeePrice > 0)
+    candidates.push({ store: "shopee", price: shopeePrice, url: product.shopee_link, priority: 2 })
 
   if (candidates.length === 0) return null
 
@@ -171,33 +171,55 @@ function pickBestManualOffer(product: any): { store: Offer["store"]; price: numb
   return { store: best.store, price: best.price, url: best.url }
 }
 
+function toAbsUrl(pathOrUrl: string) {
+  const v = (pathOrUrl || "").trim()
+  if (!v) return ""
+  if (/^https?:\/\//i.test(v)) return v
+  return `https://achadinhoslm.com.br${v.startsWith("/") ? "" : "/"}${v}`
+}
+
+// ✅ detectores para decidir target (desktop _blank vs mobile/in-app)
+function isInAppBrowser() {
+  if (typeof navigator === "undefined") return false
+  const ua = navigator.userAgent || ""
+  return /FBAN|FBAV|Instagram|Line|TikTok|Pinterest|Snapchat|WhatsApp/i.test(ua)
+}
+
+function isMobileLike() {
+  if (typeof navigator === "undefined") return false
+  return /Android|iPhone|iPad|iPod/i.test(navigator.userAgent)
+}
+
+function shouldOpenBlankDesktop() {
+  if (typeof navigator === "undefined") return false
+  if (isMobileLike()) return false
+  if (isInAppBrowser()) return false
+  return true
+}
+
 export default function ProductPage() {
   const { slug } = useParams<{ slug: string }>()
   const navigate = useNavigate()
   const location = useLocation()
 
+  // ✅ SEMEAR traffic/utm assim que entrar no produto (e quando a query mudar)
+  useEffect(() => {
+    seedTrafficCtxFromUrl()
+  }, [location.search])
+
   const { data: product, isLoading, error } = useProduct(slug || "")
   const [showOtherStores, setShowOtherStores] = useState(false)
 
-  // ✅ Hook sempre chamado
+  // ✅ Hook sempre chamado (ok: enabled controla query)
   const metricsQuery = useProductMetrics(product?.id)
-
-  // ✅ Regras “Em alta”
-  const views7d = metricsQuery.data?.views7d ?? 0
-  const efficiency7d = metricsQuery.data?.efficiency7d ?? 0
-  const showTrending = !!product?.id && views7d >= 200 && efficiency7d >= 5
 
   const hasReview = !!product?.review_url
 
-  // ✅ Best offer manual (confiável enquanto cron/verificado está poluído)
   const bestOffer = useMemo(() => {
     if (!product) return null
     return pickBestManualOffer(product)
   }, [product])
 
-  // ✅ Ofertas secundárias (mantém compatibilidade com os links atuais do product)
-  // - Primário: bestOffer (se existir)
-  // - Secundários: product.*_link (excluindo a loja primária se coincidir)
   const secondaryOffers = useMemo<Offer[]>(() => {
     if (!product) return []
     const list: Offer[] = []
@@ -208,28 +230,42 @@ export default function ProductPage() {
 
     const primaryStore = bestOffer?.store
     const filtered = primaryStore ? list.filter((o) => o.store !== primaryStore) : list
-
     return filtered.sort((a, b) => a.priority - b.priority)
   }, [product, bestOffer?.store])
 
   const hasAnyOffers = !!bestOffer || secondaryOffers.length > 0
 
+  // ✅ Regras “Em alta”
+  const views7d = metricsQuery.data?.views7d ?? 0
+  const efficiency7d = metricsQuery.data?.efficiency7d ?? 0
+  const showTrending = !!product?.id && views7d >= 200 && efficiency7d >= 5
+
+  // ✅ Preço final (mover pra memo pra não depender de hook depois)
+  const finalPrice = useMemo(() => {
+    if (!product) return NaN
+    const bestPrice = typeof bestOffer?.price === "number" ? bestOffer.price : null
+    const manualLabelPrice = parsePrice(product.price_label)
+    return bestPrice ?? (Number.isFinite(manualLabelPrice) ? manualLabelPrice : NaN)
+  }, [product, bestOffer?.price])
+
+  const urgencyText = useMemo(() => {
+    if (!product) return ""
+    const urgencyFromData = (product.urgency_label || "").trim()
+    const computedUrgency = !urgencyFromData && showTrending ? "Alta demanda hoje" : ""
+    return urgencyFromData || computedUrgency
+  }, [product, showTrending])
+
+  const shouldShowSignalsCard = Boolean(showTrending || hasReview || urgencyText)
+
   const handleBack = () => {
-    if (location.state?.from) navigate(location.state.from)
+    if ((location.state as any)?.from) navigate((location.state as any).from)
     else navigate(-1)
   }
 
-  const isMobileLike = () => {
-    if (typeof navigator === "undefined") return false
-    return /Android|iPhone|iPad|iPod/i.test(navigator.userAgent)
-  }
-
-  // ✅ Mantém o builder legado para ofertas secundárias (url-based)
   const buildGoUrl = (offer: Offer) => {
     if (!product) return "#"
 
     const finalUrl = unwrapNestedGoUrl(offer.url) || offer.url
-
     if (!isSafeHttpUrl(finalUrl)) {
       console.error("[buildGoUrl] URL inválida para outbound:", { offerUrl: offer.url, finalUrl })
       return "#"
@@ -245,6 +281,58 @@ export default function ProductPage() {
 
     return `/api/go?${params.toString()}`
   }
+
+  const primaryGoHref = useMemo(() => {
+    if (!product || !bestOffer) return ""
+    const sid = getOrCreateSessionId()
+    const finalUrl = unwrapNestedGoUrl(bestOffer.url) || bestOffer.url
+
+    if (!isSafeHttpUrl(finalUrl)) {
+      console.error("[primaryGoHref] URL inválida para outbound:", { offerUrl: bestOffer.url, finalUrl })
+      return "#"
+    }
+
+    const params = new URLSearchParams({
+      url: finalUrl,
+      product_id: product.id,
+      store: bestOffer.store,
+      session_id: sid,
+    })
+
+    return `/api/go?${params.toString()}`
+  }, [product, bestOffer])
+
+  // ✅ Product JSON-LD (SEM quebrar regra de hooks)
+  const productSchema = useMemo(() => {
+    if (!product) return null
+
+    const price = Number.isFinite(finalPrice) ? Number(finalPrice.toFixed(2)) : null
+    const offer =
+      price != null
+        ? {
+            "@type": "Offer",
+            priceCurrency: "BRL",
+            price,
+            availability: "https://schema.org/InStock",
+            url: `https://achadinhoslm.com.br/product/${product.slug}`,
+          }
+        : undefined
+
+    const img0 = product.image_urls?.[0] ? toAbsUrl(product.image_urls[0]) : ""
+
+    return {
+      "@context": "https://schema.org",
+      "@type": "Product",
+      name: product.name,
+      description: product.description || product.name,
+      sku: product.id,
+      url: `https://achadinhoslm.com.br/product/${product.slug}`,
+      image: img0 ? [img0] : undefined,
+      category: CATEGORY_LABELS[product.category] || product.category,
+      brand: (product as any)?.brand ? { "@type": "Brand", name: (product as any).brand } : undefined,
+      offers: offer,
+    }
+  }, [product, finalPrice])
 
   /**
    * TRACKING VIEW (server-side)
@@ -270,6 +358,7 @@ export default function ProductPage() {
     if (product) trackProductView(product.slug, product.category)
   }, [product])
 
+  // ============== RETURNS (SEM HOOKS ABAIXO DAQUI) ==============
   if (isLoading) {
     return (
       <Layout>
@@ -286,7 +375,16 @@ export default function ProductPage() {
 
   if (error || !product) {
     return (
-      <Layout>
+      <Layout
+        seo={{
+          title: "Produto não encontrado | Achadinhos LM",
+          description: "Produto não encontrado.",
+          canonical: `/product/${slug || ""}`,
+          ogImage: "/og-home.jpg",
+          ogType: "website",
+          noindex: true,
+        }}
+      >
         <div className="text-center py-16 space-y-4">
           <span className="text-4xl">😢</span>
           <h1 className="text-xl font-semibold">Produto não encontrado</h1>
@@ -298,52 +396,32 @@ export default function ProductPage() {
     )
   }
 
-  // ✅ Preço: prioriza o melhor manual do admin; fallback para label
-  const bestPrice = typeof bestOffer?.price === "number" ? bestOffer.price : null
-  const manualLabelPrice = parsePrice(product.price_label)
-  const finalPrice = bestPrice ?? (Number.isFinite(manualLabelPrice) ? manualLabelPrice : NaN)
-
-  const urgencyFromData = (product.urgency_label || "").trim()
-  const computedUrgency = !urgencyFromData && showTrending ? "Alta demanda hoje" : ""
-  const urgencyText = urgencyFromData || computedUrgency
-
-  const shouldShowSignalsCard = Boolean(showTrending || hasReview || urgencyText)
-
-  // ✅ CTA primário: usa URL manual do admin e mantém rastreio /api/go (url-based)
-  const primaryGoHref = bestOffer
-    ? (() => {
-        const sid = getOrCreateSessionId()
-        const finalUrl = unwrapNestedGoUrl(bestOffer.url) || bestOffer.url
-
-        if (!isSafeHttpUrl(finalUrl)) {
-          console.error("[primaryGoHref] URL inválida para outbound:", { offerUrl: bestOffer.url, finalUrl })
-          return "#"
-        }
-
-        const params = new URLSearchParams({
-          url: finalUrl,
-          product_id: product.id,
-          store: bestOffer.store,
-          session_id: sid,
-        })
-
-        return `/api/go?${params.toString()}`
-      })()
-    : ""
+  const desktopBlank = shouldOpenBlankDesktop()
 
   return (
     <Layout
       breadcrumb={[
         { name: "Home", url: "/" },
         { name: CATEGORY_LABELS[product.category], url: `/category/${product.category}` },
-        ...(product.subcategory ? [{ name: product.subcategory, url: `/category/${product.category}?sub=${product.subcategory}` }] : []),
+        ...(product.subcategory
+          ? [{ name: product.subcategory, url: `/category/${product.category}?sub=${product.subcategory}` }]
+          : []),
         { name: product.name, url: `/product/${product.slug}` },
       ]}
+      seo={{
+        title: `${product.name} | Menor preço e onde comprar`,
+        description: (product.description || `Confira onde comprar ${product.name} com o menor preço.`).slice(0, 160),
+        canonical: `/product/${product.slug}`,
+        ogImage: product.image_urls?.[0] || "/og-home.jpg",
+        ogType: "product",
+      }}
     >
-      <Helmet>
-        <title>{product.name} | Menor preço e onde comprar</title>
-        <meta name="description" content={product.description || product.name} />
-      </Helmet>
+      {/* ✅ JSON-LD no HEAD (correto) */}
+      {productSchema ? (
+        <Helmet>
+          <script type="application/ld+json">{JSON.stringify(productSchema)}</script>
+        </Helmet>
+      ) : null}
 
       <div className="animate-fade-in mx-auto max-w-6xl">
         <div className="mb-4">
@@ -429,7 +507,6 @@ export default function ProductPage() {
 
               {hasAnyOffers && (
                 <div className="space-y-3">
-                  {/* ✅ CTA primário: melhor oferta manual (admin) → /api/go?url=...&product_id=...&store=...&session_id=... */}
                   {bestOffer ? (
                     <StoreButton
                       store={bestOffer.store}
@@ -438,12 +515,13 @@ export default function ProductPage() {
                       category={product.category}
                       price={Number.isFinite(finalPrice) ? finalPrice : undefined}
                       href={primaryGoHref}
-                      target={primaryGoHref === "#" ? "_self" : isMobileLike() ? "_self" : "_blank"}
-                      disabled={primaryGoHref === "#"}
+                      target={shouldOpenBlankDesktop() ? "_blank" : "_self"}
+                      disabled={primaryGoHref === "#" || !primaryGoHref}
+                      isPrimary
+                      showExternalIcon={shouldOpenBlankDesktop()}
                     />
                   ) : null}
 
-                  {/* ✅ Secundários: links legados do produto (se existirem) */}
                   {secondaryOffers.length > 0 && (
                     <div className="rounded-2xl border border-black/10 p-4">
                       <button
@@ -452,9 +530,7 @@ export default function ProductPage() {
                         onClick={() => setShowOtherStores((v) => !v)}
                       >
                         <span>Outras lojas</span>
-                        <span className="text-xs text-muted-foreground">
-                          {showOtherStores ? "Ocultar" : `Ver ${secondaryOffers.length}`}
-                        </span>
+                        <span className="text-xs text-muted-foreground">{showOtherStores ? "Ocultar" : `Ver ${secondaryOffers.length}`}</span>
                       </button>
 
                       {showOtherStores && (
@@ -470,9 +546,10 @@ export default function ProductPage() {
                                 category={product.category}
                                 price={Number.isFinite(finalPrice) ? finalPrice : undefined}
                                 href={href}
-                                target={href === "#" ? "_self" : isMobileLike() ? "_self" : "_blank"}
+                                target={shouldOpenBlankDesktop() ? "_blank" : "_self"}
                                 className="min-h-[48px] rounded-2xl text-sm"
-                                disabled={href === "#"}
+                                disabled={href === "#" || !href}
+                                showExternalIcon={shouldOpenBlankDesktop()}
                               />
                             )
                           })}
