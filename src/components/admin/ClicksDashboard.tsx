@@ -13,6 +13,15 @@ function storeLabel(store: string) {
   return store === "mercadolivre" ? "Mercado Livre" : store === "amazon" ? "Amazon" : "Shopee"
 }
 
+function platformLabel(p: Platform) {
+  if (p === "all") return "Todas"
+  if (p === "tiktok") return "TikTok"
+  if (p === "instagram") return "Instagram"
+  if (p === "facebook") return "Facebook"
+  if (p === "google") return "Google"
+  return "Unknown"
+}
+
 function copyToClipboard(text: string) {
   try {
     void navigator.clipboard.writeText(text)
@@ -32,13 +41,26 @@ type VolumeMetric = "outbounds" | "views"
 
 export type Traffic = "all" | "organic" | "ads"
 
+// ✅ novo filtro
+export type Platform = "all" | "tiktok" | "instagram" | "facebook" | "google" | "unknown"
+
 type Props = {
   traffic?: Traffic
+}
+
+function trafficToLabel(traffic: Traffic) {
+  return traffic === "all" ? "All" : traffic === "organic" ? "Orgânico" : "Ads"
+}
+
+function periodToIntervalText(period: Period) {
+  return period === "24h" ? "24 hours" : "7 days"
 }
 
 export default function ClicksDashboard({ traffic = "all" }: Props) {
   const [mode, setMode] = useState<Mode>("performance")
   const [period, setPeriod] = useState<Period>("7d")
+
+  const [platform, setPlatform] = useState<Platform>("all")
 
   const [activeCategory, setActiveCategory] = useState<ProductCategory | "all">("all")
   const [minViews7d, setMinViews7d] = useState(50)
@@ -46,13 +68,57 @@ export default function ClicksDashboard({ traffic = "all" }: Props) {
 
   const [volumeMetric, setVolumeMetric] = useState<VolumeMetric>("outbounds")
 
-  // ✅ Por enquanto NÃO filtra no backend, só prepara o "modo"
-  const trafficLabel = traffic === "all" ? "All" : traffic === "organic" ? "Orgânico" : "Ads"
+  const trafficLabel = trafficToLabel(traffic)
+  const platformChipLabel = platformLabel(platform)
+
+  // =========================
+  // PLATFORM BREAKDOWN (best-effort)
+  // =========================
+  const platformBreakdownQuery = useQuery({
+    queryKey: ["admin-platform-breakdown", period, traffic],
+    queryFn: async () => {
+      const supabase = getSupabase()
+      const p_since_text = periodToIntervalText(period)
+      const p_traffic = traffic === "all" ? null : traffic
+
+      // ✅ RPC opcional: se não existir ainda, não quebra a tela.
+      const { data, error } = await supabase.rpc("get_outbounds_by_platform_text", {
+        p_since_text,
+        p_traffic,
+        p_platform: null,
+      })
+
+      if (error) {
+        // fallback: sem breakdown (UI continua)
+        return [] as Array<{ platform: string; outbounds: number }>
+      }
+
+      const rows = Array.isArray(data) ? data : []
+      return rows.map((r: any) => ({
+        platform: String(r.platform ?? ""),
+        outbounds: Number(r.outbounds ?? 0),
+      }))
+    },
+    staleTime: 30_000,
+    refetchOnWindowFocus: false,
+    retry: 0,
+  })
+
+  const platformCounts = useMemo(() => {
+    const map = new Map<string, number>()
+    for (const r of platformBreakdownQuery.data ?? []) {
+      map.set(String(r.platform), Number(r.outbounds) || 0)
+    }
+    return map
+  }, [platformBreakdownQuery.data])
+
+  const selectedPlatformParam = platform === "all" ? null : platform
 
   // =========================
   // 1) FUNIL (CTA -> /go)
   // =========================
-  const funnelQuery = useAdminClicksDashboard(period, traffic)
+  // ✅ agora passa platform também (ajuste o hook useAdminClicksDashboard)
+  const funnelQuery = useAdminClicksDashboard(period, traffic, platform)
 
   const funnelProductIds = useMemo(() => {
     const ids = new Set<string>()
@@ -62,16 +128,11 @@ export default function ClicksDashboard({ traffic = "all" }: Props) {
   }, [funnelQuery.data?.intent.top, funnelQuery.data?.outbound.top])
 
   const { data: productsMap } = useQuery({
-    // ✅ Não inclua traffic até o backend filtrar de verdade (evita refetch desnecessário)
     queryKey: ["admin-clicks-products", funnelProductIds.join(",")],
     enabled: funnelProductIds.length > 0 && mode === "funnel",
     queryFn: async () => {
       const supabase = getSupabase()
-      const { data, error } = await supabase
-        .from("products")
-        .select("id,name,slug,category")
-        .in("id", funnelProductIds)
-
+      const { data, error } = await supabase.from("products").select("id,name,slug,category").in("id", funnelProductIds)
       if (error) throw error
 
       const map = new Map<string, { name: string; slug: string; category: string }>()
@@ -102,6 +163,7 @@ export default function ClicksDashboard({ traffic = "all" }: Props) {
     limit: 400,
     alertEfficiency7dBelow: alertBelow,
     traffic,
+    platform, // ✅ novo
   })
 
   const perfRowsFiltered = useMemo(() => {
@@ -198,35 +260,28 @@ export default function ClicksDashboard({ traffic = "all" }: Props) {
       {/* Header + toggles */}
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
-          <h2 className="text-lg font-semibold">
-            {mode === "funnel" ? "Cliques de compra (Funil)" : "Performance por Produto"}
-          </h2>
+          <h2 className="text-lg font-semibold">{mode === "funnel" ? "Cliques de compra (Funil)" : "Performance por Produto"}</h2>
           <p className="text-sm text-muted-foreground">
             {mode === "funnel"
               ? "Intenção (CTA) vs Saída real (/go) — diagnose fricção técnica e drops."
               : "Views na ProductPage vs cliques reais de compra (/go) — priorize CRO e mix de produtos."}
           </p>
-          <div className="mt-2 flex items-center gap-2">
+
+          <div className="mt-2 flex flex-wrap items-center gap-2">
             <Badge variant="secondary">Tráfego: {trafficLabel}</Badge>
+            <Badge variant="secondary">Plataforma: {platformChipLabel}</Badge>
+
             {mode === "performance" && (
-              <Badge variant="outline">
-                Janela: {period} • Eficiência: {windowEfficiency}%
-              </Badge>
+              <Badge variant="outline">Janela: {period} • Eficiência: {windowEfficiency}%</Badge>
             )}
             {mode === "funnel" && (
-              <Badge variant="outline">
-                Janela: {period} • Eficiência: {funnelEfficiency}%
-              </Badge>
+              <Badge variant="outline">Janela: {period} • Eficiência: {funnelEfficiency}%</Badge>
             )}
           </div>
         </div>
 
         <div className="flex flex-wrap gap-2">
-          <Button
-            size="sm"
-            variant={mode === "performance" ? "default" : "outline"}
-            onClick={() => setMode("performance")}
-          >
+          <Button size="sm" variant={mode === "performance" ? "default" : "outline"} onClick={() => setMode("performance")}>
             Performance
           </Button>
           <Button size="sm" variant={mode === "funnel" ? "default" : "outline"} onClick={() => setMode("funnel")}>
@@ -244,14 +299,51 @@ export default function ClicksDashboard({ traffic = "all" }: Props) {
         </div>
       </div>
 
-      <Alert>
-        <Info className="h-4 w-4" />
-        <AlertTitle>Filtro de tráfego</AlertTitle>
-        <AlertDescription>
-          O filtro <b>{trafficLabel}</b> já está pronto na UI/URL. O backend ainda pode não estar filtrando de fato —
-          vamos conectar isso nos hooks/SQL no próximo passo.
-        </AlertDescription>
-      </Alert>
+      {/* ✅ Plataforma pills */}
+      <div className="flex flex-col gap-3 rounded-2xl border border-black/10 p-4">
+        <div className="flex flex-wrap items-center gap-2">
+          <Button size="sm" variant={platform === "all" ? "default" : "outline"} onClick={() => setPlatform("all")}>
+            Todas
+            {platformCounts.size > 0 && <span className="ml-2 opacity-70">({Array.from(platformCounts.values()).reduce((a, b) => a + b, 0)})</span>}
+          </Button>
+
+          <Button size="sm" variant={platform === "tiktok" ? "default" : "outline"} onClick={() => setPlatform("tiktok")}>
+            TikTok
+            {platformCounts.size > 0 && <span className="ml-2 opacity-70">({platformCounts.get("tiktok") ?? 0})</span>}
+          </Button>
+
+          <Button size="sm" variant={platform === "instagram" ? "default" : "outline"} onClick={() => setPlatform("instagram")}>
+            Instagram
+            {platformCounts.size > 0 && <span className="ml-2 opacity-70">({platformCounts.get("instagram") ?? 0})</span>}
+          </Button>
+
+          <Button size="sm" variant={platform === "facebook" ? "default" : "outline"} onClick={() => setPlatform("facebook")}>
+            Facebook
+            {platformCounts.size > 0 && <span className="ml-2 opacity-70">({platformCounts.get("facebook") ?? 0})</span>}
+          </Button>
+
+          <Button size="sm" variant={platform === "google" ? "default" : "outline"} onClick={() => setPlatform("google")}>
+            Google
+            {platformCounts.size > 0 && <span className="ml-2 opacity-70">({platformCounts.get("google") ?? 0})</span>}
+          </Button>
+
+          <Button size="sm" variant={platform === "unknown" ? "default" : "outline"} onClick={() => setPlatform("unknown")}>
+            Unknown
+            {platformCounts.size > 0 && <span className="ml-2 opacity-70">({platformCounts.get("unknown") ?? 0})</span>}
+          </Button>
+
+          {platformBreakdownQuery.isFetching && <span className="text-xs text-muted-foreground ml-2">atualizando…</span>}
+        </div>
+
+        <Alert>
+          <Info className="h-4 w-4" />
+          <AlertTitle>Filtro de plataforma</AlertTitle>
+          <AlertDescription>
+            Este filtro tenta identificar a origem (TikTok/Instagram/Facebook/Google) via <code>utm_source</code>,{" "}
+            <code>fbclid/ttclid/gclid</code> e/ou <code>referer</code>. Se a RPC ainda não estiver criada, a UI continua funcionando.
+          </AlertDescription>
+        </Alert>
+      </div>
 
       {isLoading && <div className="text-sm text-muted-foreground">Carregando…</div>}
       {hasError && <div className="text-sm text-destructive">Erro ao carregar dados.</div>}
@@ -264,11 +356,7 @@ export default function ClicksDashboard({ traffic = "all" }: Props) {
           {/* Filtros */}
           <div className="flex flex-col gap-3 rounded-2xl border border-black/10 p-4">
             <div className="flex flex-wrap gap-2">
-              <Button
-                size="sm"
-                variant={activeCategory === "all" ? "default" : "outline"}
-                onClick={() => setActiveCategory("all")}
-              >
+              <Button size="sm" variant={activeCategory === "all" ? "default" : "outline"} onClick={() => setActiveCategory("all")}>
                 Todas categorias
               </Button>
               {Object.entries(CATEGORY_LABELS).map(([key, label]) => (
@@ -309,7 +397,8 @@ export default function ClicksDashboard({ traffic = "all" }: Props) {
               </label>
 
               <Badge variant="secondary">
-                Base: {activeCategory === "all" ? "todas" : CATEGORY_LABELS[activeCategory]} • {period} • {trafficLabel}
+                Base: {activeCategory === "all" ? "todas" : CATEGORY_LABELS[activeCategory]} • {period} • {trafficLabel} •{" "}
+                {platformChipLabel}
               </Badge>
             </div>
           </div>
@@ -330,8 +419,7 @@ export default function ClicksDashboard({ traffic = "all" }: Props) {
               <div className="text-sm text-muted-foreground">Eficiência (outbound / views)</div>
               <div className="text-2xl font-semibold">{windowEfficiency}%</div>
               <div className="text-xs text-muted-foreground mt-1">
-                Pode passar de 100% se houver outbounds “atrasados” (ex.: clique hoje em view de ontem) ou tráfego
-                in-app/redirect.
+                Pode passar de 100% se houver outbounds “atrasados” (ex.: clique hoje em view de ontem) ou tráfego in-app/redirect.
               </div>
             </div>
           </div>
@@ -381,26 +469,16 @@ export default function ClicksDashboard({ traffic = "all" }: Props) {
               </div>
 
               <div className="flex gap-2 mb-3">
-                <Button
-                  size="sm"
-                  variant={volumeMetric === "outbounds" ? "default" : "outline"}
-                  onClick={() => setVolumeMetric("outbounds")}
-                >
+                <Button size="sm" variant={volumeMetric === "outbounds" ? "default" : "outline"} onClick={() => setVolumeMetric("outbounds")}>
                   Outbounds
                 </Button>
-                <Button
-                  size="sm"
-                  variant={volumeMetric === "views" ? "default" : "outline"}
-                  onClick={() => setVolumeMetric("views")}
-                >
+                <Button size="sm" variant={volumeMetric === "views" ? "default" : "outline"} onClick={() => setVolumeMetric("views")}>
                   Views
                 </Button>
               </div>
 
               <div className="space-y-2">
-                {topVolume.length === 0 && (
-                  <div className="text-sm text-muted-foreground">Sem dados para esta janela/filtro.</div>
-                )}
+                {topVolume.length === 0 && <div className="text-sm text-muted-foreground">Sem dados para esta janela/filtro.</div>}
 
                 {topVolume.map((r, idx) => {
                   const v = period === "24h" ? r.views_24h : r.views_7d
@@ -464,7 +542,7 @@ export default function ClicksDashboard({ traffic = "all" }: Props) {
       )}
 
       {/* =========================
-          FUNNEL (original)
+          FUNNEL
          ========================= */}
       {mode === "funnel" && funnelQuery.data && (
         <>
@@ -568,14 +646,9 @@ export default function ClicksDashboard({ traffic = "all" }: Props) {
               </div>
 
               <div className="space-y-2">
-                {funnelQuery.data.intent.byStore.length === 0 && (
-                  <div className="text-sm text-muted-foreground">Sem dados no período.</div>
-                )}
+                {funnelQuery.data.intent.byStore.length === 0 && <div className="text-sm text-muted-foreground">Sem dados no período.</div>}
                 {funnelQuery.data.intent.byStore.map((row) => (
-                  <div
-                    key={`intent-store-${row.store}`}
-                    className="flex items-center justify-between rounded-xl border border-black/10 px-3 py-2"
-                  >
+                  <div key={`intent-store-${row.store}`} className="flex items-center justify-between rounded-xl border border-black/10 px-3 py-2">
                     <div className="text-sm">{storeLabel(row.store)}</div>
                     <div className="text-sm font-semibold">{row.clicks}</div>
                   </div>
@@ -591,9 +664,7 @@ export default function ClicksDashboard({ traffic = "all" }: Props) {
               </div>
 
               <div className="space-y-2">
-                {funnelQuery.data.outbound.byStore.length === 0 && (
-                  <div className="text-sm text-muted-foreground">Sem dados no período.</div>
-                )}
+                {funnelQuery.data.outbound.byStore.length === 0 && <div className="text-sm text-muted-foreground">Sem dados no período.</div>}
                 {funnelQuery.data.outbound.byStore.map((row) => (
                   <div
                     key={`outbound-store-${row.store}`}

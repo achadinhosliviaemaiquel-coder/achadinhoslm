@@ -1,6 +1,6 @@
 import { useQuery } from "@tanstack/react-query"
 import { getSupabase } from "@/integrations/supabase/client"
-import type { Traffic } from "@/components/admin/ClicksDashboard"
+import type { Traffic, Platform } from "@/components/admin/ClicksDashboard"
 
 export type AdminProductMetricsRow = {
   product_id: string
@@ -39,29 +39,60 @@ function trafficToParam(traffic: Traffic) {
   return traffic === "all" ? null : traffic
 }
 
+function platformToParam(platform: Platform) {
+  return platform === "all" ? null : platform
+}
+
+function isMissingParamError(msg: string) {
+  const s = (msg || "").toLowerCase()
+  return s.includes("parameter") || s.includes("p_platform") || s.includes("unknown argument") || s.includes("does not exist")
+}
+
 export function useAdminProductMetrics(params?: {
   minViews7d?: number
   limit?: number
   alertEfficiency7dBelow?: number // %
   traffic?: Traffic
+  platform?: Platform // ✅ novo
 }) {
   const minViews7d = params?.minViews7d ?? 50
   const limit = params?.limit ?? 400
   const alertEfficiency7dBelow = params?.alertEfficiency7dBelow ?? 2.0
   const traffic = params?.traffic ?? "all"
+  const platform = params?.platform ?? "all"
 
   return useQuery({
-    queryKey: ["admin-products-metrics", minViews7d, limit, alertEfficiency7dBelow, traffic],
+    queryKey: ["admin-products-metrics", minViews7d, limit, alertEfficiency7dBelow, traffic, platform],
     placeholderData: (prev) => prev,
     queryFn: async (): Promise<AdminProductMetricsRow[]> => {
       const supabase = getSupabase()
-      const { data, error } = await supabase.rpc("get_products_metrics_admin", {
+
+      // ✅ tenta com p_platform; se a RPC ainda não aceitar, faz fallback sem quebrar
+      let data: any = null
+
+      const withPlatform = await supabase.rpc("get_products_metrics_admin", {
         p_min_views_7d: minViews7d,
         p_limit: limit,
         p_alert_efficiency_7d_below: alertEfficiency7dBelow,
         p_traffic: trafficToParam(traffic),
+        p_platform: platformToParam(platform),
       })
-      if (error) throw error
+
+      if (!withPlatform.error) {
+        data = withPlatform.data
+      } else {
+        const msg = withPlatform.error.message || ""
+        if (!isMissingParamError(msg)) throw withPlatform.error
+
+        const fallback = await supabase.rpc("get_products_metrics_admin", {
+          p_min_views_7d: minViews7d,
+          p_limit: limit,
+          p_alert_efficiency_7d_below: alertEfficiency7dBelow,
+          p_traffic: trafficToParam(traffic),
+        })
+        if (fallback.error) throw fallback.error
+        data = fallback.data
+      }
 
       const rows = Array.isArray(data) ? data : []
       return rows.map((r: any) => ({

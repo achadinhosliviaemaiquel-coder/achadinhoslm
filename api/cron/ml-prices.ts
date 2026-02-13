@@ -12,6 +12,7 @@ type StoreOffer = {
   external_id: string | null; // MLBxxxx / MLBUxxxx
   url: string | null;
   is_active: boolean;
+  current_price_cents?: number | null;
 };
 
 type JobCounters = {
@@ -380,13 +381,31 @@ async function fetchWithRetryHtml(
   }
 }
 
-// ---------- parsing de preço (mantive o seu núcleo) ----------
+// ---------- parsing de preço ----------
 function safeJsonParse<T = any>(s: string): T | null {
   try {
     return JSON.parse(s) as T;
   } catch {
     return null;
   }
+}
+
+function sanitizeMlPriceCents(args: {
+  computedCents: number; // Math.round(price*100)
+  prevCents?: number | null; // offer.current_price_cents
+}): number {
+  const cents = args.computedCents;
+  const prev = args.prevCents ?? null;
+
+  // Regra 1 (forte): salto absurdo vs preço anterior e é múltiplo de 100 => double-scale.
+  if (prev && prev > 0) {
+    if (cents >= prev * 10 && cents % 100 === 0) return Math.round(cents / 100);
+  }
+
+  // Regra 2 (fallback): preços gigantes e múltiplos de 100 tendem a ser double-scale.
+  if (cents >= 500_000 && cents % 100 === 0) return Math.round(cents / 100);
+
+  return cents;
 }
 
 function parseNumberLoose(v: unknown): number | null {
@@ -397,6 +416,7 @@ function parseNumberLoose(v: unknown): number | null {
     .replace(/\s+/g, " ")
     .replace(/[R$\u00A0]/g, "")
     .trim();
+
   const hasComma = s.includes(",");
   const hasDot = s.includes(".");
 
@@ -688,7 +708,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     console.log(line);
   };
 
-  // ✅ FIX DO "never": use generic any no client
+  // supabase disponível também no finally
   const supabase = createClient<any>(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, {
     auth: { persistSession: false },
   });
@@ -756,7 +776,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         started_at: new Date().toISOString(),
         stats: {
           snapshotDate,
-          offset, // ✅ ADD
+          offset,
           batchSize: limit,
           concurrency: MAX_CONCURRENCY,
           scanned: job.scanned,
@@ -766,7 +786,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           priceNotFound: job.priceNotFound,
           http429: job.http429,
           retries: job.retries,
-          durationMs,
+          durationMs: 0, // ✅ FIX: não existe ainda
           stoppedEarly,
           maxRunMs: MAX_RUN_MS,
         },
@@ -786,7 +806,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     const { data: offers, error } = await supabase
       .from("store_offers")
-      .select("id, product_id, platform, external_id, url, is_active")
+      .select(
+        "id, product_id, platform, external_id, url, is_active, current_price_cents",
+      )
       .eq("platform", PLATFORM_LABEL)
       .eq("is_active", true)
       .order("id", { ascending: true })
@@ -809,7 +831,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       filtered,
       MAX_CONCURRENCY,
       async (offer) => {
-        // ✅ conta scanned por offer processado (independente do resultado)
         job.scanned += 1;
 
         if (Date.now() > deadlineMs) {
@@ -871,7 +892,20 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
               ? anyRes.url
               : fetchUrl;
 
-          if (!pageRes.ok) continue;
+          if (!pageRes.ok) {
+            // marca um status útil (sem explodir o job)
+            const nowIso = new Date().toISOString();
+            await supabase
+              .from("store_offers")
+              .update({
+                last_scrape_at: nowIso,
+                last_scrape_status: `http_${pageRes.status}`,
+                last_final_url: finalUrl,
+                updated_at: nowIso,
+              })
+              .eq("id", offer.id);
+            continue;
+          }
 
           const html = await pageRes.text();
           const title = shortTitle(html);
@@ -889,6 +923,22 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             if (!lastErrorSample) lastErrorSample = msg.slice(0, 500);
             log(msg);
 
+            // marca status no offer
+            const nowIso = new Date().toISOString();
+            await supabase
+              .from("store_offers")
+              .update({
+                last_scrape_at: nowIso,
+                last_scrape_status: "gate",
+                last_scrape_evidence: "bot_or_login",
+                last_final_url: finalUrl,
+                updated_at: nowIso,
+                gate_count: (offer as any).gate_count
+                  ? (offer as any).gate_count + 1
+                  : 1,
+              })
+              .eq("id", offer.id);
+
             if (gateCount >= BOT_FAILFAST_THRESHOLD) {
               stoppedEarly = true;
               throw new Error("GATE_FAILFAST");
@@ -896,6 +946,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             continue;
           }
 
+          // evita falso-positivo
           if (extracted.evidence === "regex_brl") continue;
 
           if (extracted.price !== null && extracted.price > 0) {
@@ -912,6 +963,17 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           const msg = `Price not found ext=${label} offerId=${offer.id}`;
           if (!lastErrorSample) lastErrorSample = msg.slice(0, 500);
           log(msg);
+
+          const nowIso = new Date().toISOString();
+          await supabase
+            .from("store_offers")
+            .update({
+              last_scrape_at: nowIso,
+              last_scrape_status: "price_not_found",
+              updated_at: nowIso,
+            })
+            .eq("id", offer.id);
+
           return;
         }
 
@@ -948,25 +1010,35 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         );
 
         if (upErr) {
-          job.failed += 1;
           throw new Error(
             `Upsert offer_last_price failed ext=${label}: ${upErr.message}`,
           );
         }
 
-        const priceCents = Math.round(bestFound.price! * 100);
+        const computedCents = Math.round(bestFound.price! * 100);
+        const priceCents = sanitizeMlPriceCents({
+          computedCents,
+          prevCents: offer.current_price_cents ?? null,
+        });
 
         const { error: soErr } = await supabase
           .from("store_offers")
           .update({
             current_price_cents: priceCents,
+            current_currency: currency_id,
             current_price_updated_at: nowIso,
+
+            last_scrape_at: nowIso,
+            last_scrape_status: "ok",
+            last_scrape_evidence: `${bestFound.evidence}:${bestFound.evidence_detail}`,
+            last_final_url: bestFinalUrl,
+
             url: bestFinalUrl,
+            updated_at: nowIso,
           })
           .eq("id", offer.id);
 
         if (soErr) {
-          job.failed += 1;
           throw new Error(
             `Update store_offers failed ext=${label}: ${soErr.message}`,
           );
@@ -981,7 +1053,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           .eq("id", offer.product_id);
 
         if (prodErr) {
-          job.failed += 1;
           throw new Error(
             `Update products.mercadolivre_price failed ext=${label}: ${prodErr.message}`,
           );
@@ -990,7 +1061,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         job.updated += 1;
 
         log(
-          `OK ext=${label} price=${bestFound.price} final=${bestFinalUrl} currency=${currency_id}`,
+          `OK ext=${label} price=${bestFound.price} cents=${priceCents} final=${bestFinalUrl} currency=${currency_id}`,
         );
       },
     );
@@ -1005,12 +1076,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         finalStatus = "partial";
       }
 
-      // ✅ conta failed só para erros "reais", não timeout/gate failfast
+      // conta failed só para erros "reais", não timeout/gate failfast
       for (const e of poolErrors) {
         const msg = errorMessage(e);
         if (msg.includes("TIME_BUDGET_EXCEEDED")) continue;
         if (msg.includes("GATE_FAILFAST")) continue;
-        // se chegou aqui, é falha de processamento
         job.failed += 1;
       }
     }
@@ -1061,7 +1131,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       error: msg,
     });
   } finally {
-    // finaliza o job run sempre que a função conseguir chegar aqui
     try {
       if (jobRunId) {
         const durationMs = Date.now() - t0;

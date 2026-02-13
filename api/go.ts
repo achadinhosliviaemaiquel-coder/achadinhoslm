@@ -1,5 +1,6 @@
+// api/go.ts
 import type { VercelRequest, VercelResponse } from "@vercel/node";
-import { createClient } from "@supabase/supabase-js";
+import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 
 function getServerSupabase() {
   const url = process.env.SUPABASE_URL;
@@ -85,9 +86,30 @@ function safeTrunc(v: string | null | undefined, max = 500) {
   return s.length > max ? s.slice(0, max) : s;
 }
 
+function pickString(v: unknown): string | null {
+  const s = String(v ?? "").trim();
+  return s ? s : null;
+}
+
+function getHeader(req: VercelRequest, name: string): string {
+  const v = req.headers[name.toLowerCase()];
+  if (Array.isArray(v)) return v[0] ?? "";
+  return (v as string | undefined) ?? "";
+}
+
+function getReferer(req: VercelRequest): string | null {
+  return (
+    safeTrunc(
+      (req.headers.referer as string) ??
+        (req.headers.referrer as string) ??
+        null,
+      1000,
+    ) ?? null
+  );
+}
+
 /**
  * Lê UTMs do request URL (querystring) e, se não houver, tenta do Referer.
- * Isso faz o /go/... ?utm_... funcionar mesmo quando o Referer não tem UTMs.
  */
 function parseUtmFromRequest(req: VercelRequest): UTMFields {
   const empty: UTMFields = {
@@ -103,11 +125,11 @@ function parseUtmFromRequest(req: VercelRequest): UTMFields {
 
   // 1) querystring do próprio request
   try {
-    const host = String(req.headers.host || "dummy.local");
+    const host = String(getHeader(req, "x-forwarded-host") || req.headers.host || "dummy.local");
     const proto =
-      (String(req.headers["x-forwarded-proto"] || "") || "https")
+      (String(getHeader(req, "x-forwarded-proto") || "https")
         .split(",")[0]
-        .trim() || "https";
+        .trim() || "https");
 
     const u = new URL(req.url || "", `${proto}://${host}`);
     const sp = u.searchParams;
@@ -139,9 +161,7 @@ function parseUtmFromRequest(req: VercelRequest): UTMFields {
   }
 
   // 2) fallback: tenta do referer
-  const referer =
-    (req.headers.referer as string) ?? (req.headers.referrer as string) ?? null;
-
+  const referer = getReferer(req);
   if (!referer) return empty;
 
   try {
@@ -163,11 +183,7 @@ function parseUtmFromRequest(req: VercelRequest): UTMFields {
 }
 
 /**
- * Classifica traffic (ads vs organic) a partir de:
- * - UTMs (do request query OU referer)
- * - clids (fbclid/gclid/ttclid)
- * - user-agent in-app (FB/IG/TikTok - best effort)
- * - referer de FB/IG/TikTok
+ * Classifica traffic (ads vs organic)
  */
 function detectTrafficFromRequest(
   req: VercelRequest,
@@ -176,6 +192,8 @@ function detectTrafficFromRequest(
 ): Traffic {
   const ua = String(uaRaw ?? "");
   const utm = parseUtmFromRequest(req);
+
+  const hasClid = !!utm.fbclid || !!utm.gclid || !!utm.ttclid;
 
   const utmMedium = (utm.utm_medium || "").toLowerCase();
   const utmSource = (utm.utm_source || "").toLowerCase();
@@ -196,7 +214,6 @@ function detectTrafficFromRequest(
   const looksLikeTikTok =
     utmSource === "tt" || utmSource === "tiktok" || utmSource === "tik_tok";
 
-  const uaLower = ua.toLowerCase();
   const uaIsFbIgInApp =
     ua.includes("FBAV") ||
     ua.includes("FB_IAB") ||
@@ -225,13 +242,112 @@ function detectTrafficFromRequest(
     hasClid ||
     looksLikePaid ||
     looksLikeFbIg ||
+    looksLikeTikTok ||
     uaIsFbIgInApp ||
-    refIsFbIg ||
     uaIsTikTokInApp ||
+    refIsFbIg ||
     refIsTikTok
-  )
+  ) {
     return "ads";
+  }
+
   return "organic";
+}
+
+/**
+ * Pra suportar o filtro "plataforma" no Admin:
+ * preenche campos (se existirem no banco):
+ * - referrer (domínio do referer)
+ * - utm_source
+ * - page_url (idealmente URL da página do seu site onde ocorreu o clique; fallback = referer)
+ */
+function guessPlatformFromSignals(args: {
+  referrer: string | null;
+  utm: UTMFields;
+  page_url: string | null;
+}): string {
+  const ref = (args.referrer || "").toLowerCase();
+  const page = (args.page_url || "").toLowerCase();
+  const src = (args.utm.utm_source || "").toLowerCase();
+
+  const has = (s: string) => ref.includes(s) || page.includes(s);
+
+  if (src.match(/(facebook|fb|meta)/)) return "facebook";
+  if (src.match(/(instagram|ig)/)) return "instagram";
+  if (src.match(/(tiktok|tt|tik_tok)/)) return "tiktok";
+  if (src.match(/(google|gads|adwords)/)) return "google";
+
+  if (has("tiktok.com") || args.utm.ttclid) return "tiktok";
+  if (has("instagram.com")) return "instagram";
+  if (has("facebook.com") || has("fb.com") || has("m.facebook.com") || has("l.facebook.com") || args.utm.fbclid)
+    return "facebook";
+  if (has("google.") || args.utm.gclid) return "google";
+
+  return "unknown";
+}
+
+async function getExistingColumns(supabase: SupabaseClient, table: string): Promise<Set<string>> {
+  const { data, error } = await supabase
+    .from("information_schema.columns")
+    .select("column_name")
+    .eq("table_schema", "public")
+    .eq("table_name", table);
+
+  if (error) throw error;
+  const set = new Set<string>();
+  for (const r of data ?? []) set.add(String((r as any).column_name));
+  return set;
+}
+
+/**
+ * Inserção "best-effort":
+ * - tenta inserir payload completo
+ * - se falhar por colunas inexistentes (PGRST204), busca colunas e reinserte somente o que existe
+ */
+async function safeInsert(
+  supabase: SupabaseClient,
+  table: string,
+  payload: Record<string, any>,
+  logPrefix: string,
+) {
+  const clean: Record<string, any> = { ...payload };
+  Object.keys(clean).forEach((k) => {
+    if (clean[k] === undefined) delete clean[k];
+  });
+
+  const first = await supabase.from(table).insert(clean);
+  if (!first.error) return;
+
+  const code = (first.error as any)?.code;
+  if (code !== "PGRST204") {
+    console.error(`${logPrefix} insert error:`, {
+      message: first.error.message,
+      code,
+      details: (first.error as any).details,
+      hint: (first.error as any).hint,
+    });
+    return;
+  }
+
+  try {
+    const cols = await getExistingColumns(supabase, table);
+    const sanitized: Record<string, any> = {};
+    for (const [k, v] of Object.entries(clean)) {
+      if (cols.has(k)) sanitized[k] = v;
+    }
+
+    const second = await supabase.from(table).insert(sanitized);
+    if (second.error) {
+      console.error(`${logPrefix} insert retry error:`, {
+        message: second.error.message,
+        code: (second.error as any)?.code,
+        details: (second.error as any).details,
+        hint: (second.error as any).hint,
+      });
+    }
+  } catch (e) {
+    console.error(`${logPrefix} retry sanitize exception:`, e);
+  }
 }
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
@@ -248,13 +364,15 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
   // ---- shared
   const session_id = safeTrunc(String(req.query.session_id || ""), 200) || null;
-  const referer =
-    safeTrunc(
-      (req.headers.referer as string) ??
-        (req.headers.referrer as string) ??
-        null,
-      1000,
-    ) ?? null;
+  const referer = getReferer(req);
+
+  // Para suportar filtro plataforma: ideal é o client mandar page_url
+  // ex: /api/go?...&page_url=${encodeURIComponent(location.href)}
+  const page_url =
+    safeTrunc(pickString(req.query.page_url) ?? "", 1500) ||
+    // fallback: a URL anterior (referer) normalmente é a ProductPage do seu site
+    referer ||
+    null;
 
   res.setHeader("Cache-Control", "no-store");
   res.setHeader("Referrer-Policy", "no-referrer-when-downgrade");
@@ -268,7 +386,21 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     return res.end();
   };
 
-  // Helper: registra também em product_clicks (outbound) para funil/traffic
+  // Helper: fallback link do products por store
+  function productFallbackUrl(prod: any, store: AllowedStore): string | null {
+    if (!prod) return null;
+    const v =
+      store === "shopee"
+        ? prod.shopee_link
+        : store === "mercadolivre"
+          ? prod.mercadolivre_link
+          : prod.amazon_link;
+    if (typeof v !== "string") return null;
+    const t = v.trim();
+    return t ? t : null;
+  }
+
+  // Helper: registra também em product_clicks (outbound) para funil/traffic + plataforma
   async function mirrorOutboundToClicks(args: {
     product_id: string;
     store: AllowedStore;
@@ -278,54 +410,53 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   }) {
     if (!supabase) return;
 
-    const ua =
-      safeTrunc((req.headers["user-agent"] as string) ?? null, 500) ?? null;
+    const ua = safeTrunc((req.headers["user-agent"] as string) ?? null, 500) ?? null;
     const traffic = detectTrafficFromRequest(req, ua, args.referer);
     const utm = parseUtmFromRequest(req);
 
-    // ✅ NÃO enviar colunas que podem não existir (evita PGRST204 quebrar o /go)
+    // Campo "referrer" (domínio/fonte) pode ser usado pelo SQL (detect_platform)
+    const platform = guessPlatformFromSignals({
+      referrer: args.referer,
+      utm,
+      page_url,
+    });
+
     const payload: Record<string, any> = {
       kind: "outbound",
       product_id: args.product_id,
       store: args.store,
       created_at: nowIso,
       user_agent: ua,
-      referrer: args.referer,
       referer: args.referer,
+      referrer: args.referer, // mantém compat com o que você já usa
       session_id: args.session_id,
       traffic,
       origin: "go",
       outbound_url: args.final_url,
+
+      // ✅ novos campos (se existirem no banco, serão salvos; senão, safeInsert remove)
+      utm_source: utm.utm_source,
+      utm_medium: utm.utm_medium,
+      utm_campaign: utm.utm_campaign,
+      utm_content: utm.utm_content,
+      utm_term: utm.utm_term,
+      fbclid: utm.fbclid,
+      gclid: utm.gclid,
+      ttclid: utm.ttclid,
+
+      page_url,
+      platform, // opcional: se você decidir criar coluna "platform"
     };
 
-    // UTMs/clids são ótimos, mas só envie se a tabela tiver as colunas.
-    // Se você já criou essas colunas em product_clicks, pode habilitar aqui.
-    // Caso contrário, deixe comentado para não derrubar o endpoint.
-    //
-    // payload.utm_source = utm.utm_source;
-    // payload.utm_medium = utm.utm_medium;
-    // payload.utm_campaign = utm.utm_campaign;
-    // payload.utm_content = utm.utm_content;
-    // payload.utm_term = utm.utm_term;
-    // payload.fbclid = utm.fbclid;
-    // payload.gclid = utm.gclid;
-    // payload.ttclid = utm.ttclid;
-
     try {
-      const { error } = await supabase.from("product_clicks").insert(payload);
-      if (error) {
-        console.error(
-          "[/api/go] mirror product_clicks outbound insert error:",
-          error,
-        );
-      }
+      await safeInsert(supabase as SupabaseClient, "product_clicks", payload, "[/api/go] mirror product_clicks");
     } catch (e) {
       console.error("[/api/go] mirror product_clicks outbound exception:", e);
     }
   }
 
   // ===========================
-  // MODE SLUG: resolve slug -> product_id -> offer_id, then fall through to MODE A
+  // MODE SLUG: resolve slug -> product_id -> offer_id (com fallback obrigatório)
   // ===========================
   if (slug_raw) {
     const storeFromSlug = normalizeStore(store_raw);
@@ -336,9 +467,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       return res.status(500).send("Tracking unavailable");
     }
 
+    // ✅ agora traz fallback links também
     const { data: prod, error: prodErr } = await supabase
       .from("products")
-      .select("id")
+      .select("id, shopee_link, mercadolivre_link, amazon_link")
       .eq("slug", slug_raw)
       .maybeSingle();
 
@@ -348,23 +480,32 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     }
     if (!prod?.id) return res.status(404).send("Product not found");
 
+    // ✅ FIX: remover order por coluna inexistente "price"
     const { data: offer, error: offerErr } = await supabase
       .from("store_offers")
-      .select("id")
+      .select("id, url")
       .eq("product_id", prod.id)
       .eq("platform", storeFromSlug)
       .eq("is_active", true)
-      // ajuste se seu critério de "melhor oferta" for outro:
-      .order("price", { ascending: true, nullsFirst: false })
+      .not("url", "is", null)
+      .order("priority_boost", { ascending: false, nullsFirst: false })
+      .order("current_price_cents", { ascending: true, nullsFirst: false })
       .order("updated_at", { ascending: false, nullsFirst: false })
       .limit(1)
       .maybeSingle();
 
     if (offerErr) {
-      console.error("[/api/go] offer lookup error (slug):", offerErr);
+      console.error("[/api/go] offer lookup error (slug) -> fallback:", offerErr);
+      const fb = productFallbackUrl(prod, storeFromSlug);
+      if (fb) return redirect(fb, "0");
       return res.status(500).send("Offer lookup failed");
     }
-    if (!offer?.id) return res.status(404).send("Offer not found");
+
+    if (!offer?.id) {
+      const fb = productFallbackUrl(prod, storeFromSlug);
+      if (fb) return redirect(fb, "0");
+      return res.status(404).send("Offer not found");
+    }
 
     // injeta offer_id e segue para o MODE A logo abaixo
     (req.query as any).offer_id = String(offer.id);
@@ -407,7 +548,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       return res.status(400).send("Invalid offer url");
     }
 
-    // best-effort price snapshot
+    // best-effort price snapshot (mantido)
     let price_at_click: number | null = null;
     let currency_at_click: string | null = null;
     let price_verified_date: string | null = null;
@@ -430,8 +571,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     let tracked = false;
     try {
-      const ua =
-        safeTrunc((req.headers["user-agent"] as string) ?? null, 500) ?? null;
+      const ua = safeTrunc((req.headers["user-agent"] as string) ?? null, 500) ?? null;
       const utm = parseUtmFromRequest(req);
       const traffic = detectTrafficFromRequest(req, ua, referer);
 
@@ -456,6 +596,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         fbclid: utm.fbclid,
         gclid: utm.gclid,
         ttclid: utm.ttclid,
+
+        // ✅ novos (se existirem no banco; se não, não faz diferença)
+        page_url,
       });
 
       tracked = !error;
@@ -464,7 +607,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       console.error("[/api/go] outbound exception:", e);
     }
 
-    // espelha no funil (product_clicks.kind='outbound' com traffic)
     await mirrorOutboundToClicks({
       product_id: offer.product_id,
       store,
@@ -501,8 +643,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
   let tracked = false;
   try {
-    const ua =
-      safeTrunc((req.headers["user-agent"] as string) ?? null, 500) ?? null;
+    const ua = safeTrunc((req.headers["user-agent"] as string) ?? null, 500) ?? null;
     const utm = parseUtmFromRequest(req);
     const traffic = detectTrafficFromRequest(req, ua, referer);
 
@@ -523,16 +664,17 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       fbclid: utm.fbclid,
       gclid: utm.gclid,
       ttclid: utm.ttclid,
+
+      // ✅ novos (se existirem no banco)
+      page_url,
     });
 
     tracked = !error;
-    if (error)
-      console.error("[/api/go] outbound insert error (legacy):", error);
+    if (error) console.error("[/api/go] outbound insert error (legacy):", error);
   } catch (e) {
     console.error("[/api/go] outbound exception (legacy):", e);
   }
 
-  // espelha no funil (product_clicks.kind='outbound' com traffic)
   await mirrorOutboundToClicks({
     product_id,
     store,

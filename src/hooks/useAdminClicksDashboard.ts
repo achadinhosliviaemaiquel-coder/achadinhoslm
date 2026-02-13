@@ -1,6 +1,6 @@
 import { useQuery } from "@tanstack/react-query"
 import { getSupabase } from "@/integrations/supabase/client"
-import type { Traffic } from "@/components/admin/ClicksDashboard"
+import type { Traffic, Platform } from "@/components/admin/ClicksDashboard"
 
 type Period = "24h" | "7d"
 type Kind = "intent" | "outbound"
@@ -12,8 +12,11 @@ function trafficToParam(traffic: Traffic) {
   return traffic === "all" ? null : traffic
 }
 
-function intervalForPeriod(period: Period): string {
-  // Postgres consegue fazer cast de text -> interval (ex: '24 hours', '7 days')
+function platformToParam(platform: Platform) {
+  return platform === "all" ? null : platform
+}
+
+function sinceTextForPeriod(period: Period): string {
   return period === "24h" ? "24 hours" : "7 days"
 }
 
@@ -26,38 +29,49 @@ function toNumber(v: unknown): number {
   return 0
 }
 
-export function useAdminClicksDashboard(period: Period, traffic: Traffic = "all") {
+export function useAdminClicksDashboard(
+  period: Period,
+  traffic: Traffic = "all",
+  platform: Platform = "all",
+) {
   return useQuery({
-    queryKey: ["admin-clicks-dashboard", period, traffic],
+    queryKey: ["admin-clicks-dashboard", period, traffic, platform],
     placeholderData: (prev) => prev,
     queryFn: async () => {
       const supabase = getSupabase()
 
-      const p_since = intervalForPeriod(period) as any // será coerção para interval do lado do Postgres
+      const p_since_text = sinceTextForPeriod(period)
       const p_traffic = trafficToParam(traffic)
+      const p_platform = platformToParam(platform)
 
       const [intentTop, outboundTop, intentByStore, outboundByStore] = await Promise.all([
-        supabase.rpc("get_top_clicked_products", {
-          p_since,
+        supabase.rpc("get_top_clicked_products_platform_text", {
+          p_since_text,
           p_limit: 20,
           p_kind: "intent" as Kind,
           p_traffic,
+          p_platform,
         }),
-        supabase.rpc("get_top_clicked_products", {
-          p_since,
+        supabase.rpc("get_top_clicked_products_platform_text", {
+          p_since_text,
           p_limit: 20,
           p_kind: "outbound" as Kind,
           p_traffic,
+          p_platform,
         }),
-        supabase.rpc("get_clicks_by_store", {
-          p_since,
+
+        // ✅ aqui usamos a função unificada (platform opcional)
+        supabase.rpc("get_clicks_by_store_text", {
+          p_since_text,
           p_kind: "intent" as Kind,
           p_traffic,
+          p_platform,
         }),
-        supabase.rpc("get_clicks_by_store", {
-          p_since,
+        supabase.rpc("get_clicks_by_store_text", {
+          p_since_text,
           p_kind: "outbound" as Kind,
           p_traffic,
+          p_platform,
         }),
       ])
 
