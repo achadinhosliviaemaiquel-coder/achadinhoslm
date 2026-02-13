@@ -222,11 +222,6 @@ function resolveUtm(req: VercelRequest, q: any): UTMFields {
   }
 }
 
-/**
- * Regra:
- * - ads se: clid OU utm_medium paid/cpc/etc OU in-app/ref social
- * - e também trata social source (fb/ig/tt/tiktok) como ads quando acompanhado de paid/clid
- */
 function detectTraffic(req: VercelRequest, utm: UTMFields): Traffic {
   const ua = String(req.headers["user-agent"] ?? "")
   const ref = getHeaderReferer(req)
@@ -258,9 +253,7 @@ function detectTraffic(req: VercelRequest, utm: UTMFields): Traffic {
     /TikTok|TTWebView|BytedanceWebview|ByteDanceWebview|Bytedance|musical_ly|musically/i.test(ua)
 
   const refIsSocial =
-    /facebook\.com|l\.facebook\.com|instagram\.com|l\.instagram\.com|tiktok\.com|vm\.tiktok\.com|m\.tiktok\.com|ads\.tiktok\.com/i.test(
-      ref
-    )
+    /facebook\.com|l\.facebook\.com|instagram\.com|l\.instagram\.com|tiktok\.com|vm\.tiktok\.com|m\.tiktok\.com|ads\.tiktok\.com/i.test(ref)
 
   if (hasClid) return "ads"
   if (looksLikePaid) return "ads"
@@ -270,17 +263,59 @@ function detectTraffic(req: VercelRequest, utm: UTMFields): Traffic {
   return "organic"
 }
 
-async function getExistingColumns(supabase: SupabaseClient, table: string): Promise<Set<string>> {
-  const { data, error } = await supabase
-    .from("information_schema.columns")
-    .select("column_name")
-    .eq("table_schema", "public")
-    .eq("table_name", table)
+function extractMissingColumnFromPgrst204(message?: string): string | null {
+  if (!message) return null
+  const m = message.match(/Could not find the '([^']+)' column/)
+  return m?.[1] ?? null
+}
 
-  if (error) throw error
-  const set = new Set<string>()
-  for (const r of data ?? []) set.add(String((r as any).column_name))
-  return set
+async function safeInsertNoIntrospection(
+  supabase: SupabaseClient,
+  table: string,
+  payload: Record<string, any>,
+  logPrefix: string,
+  maxRetries = 6
+) {
+  const clean: Record<string, any> = { ...payload }
+  Object.keys(clean).forEach((k) => {
+    if (clean[k] === undefined) delete clean[k]
+  })
+
+  let current = clean
+
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    const r = await supabase.from(table).insert(current)
+    if (!r.error) return
+
+    const code = (r.error as any)?.code
+    if (code !== "PGRST204") {
+      console.error(`${logPrefix} insert error:`, {
+        message: r.error.message,
+        code,
+        details: (r.error as any).details,
+        hint: (r.error as any).hint,
+      })
+      return
+    }
+
+    const missing = extractMissingColumnFromPgrst204(r.error.message)
+    if (!missing || !(missing in current)) {
+      console.error(`${logPrefix} insert PGRST204 but could not sanitize:`, {
+        message: r.error.message,
+        code,
+      })
+      return
+    }
+
+    const next = { ...current }
+    delete next[missing]
+    current = next
+
+    if (attempt === maxRetries) {
+      console.error(`${logPrefix} insert failed after retries (missing columns). Last missing: ${missing}`)
+      return
+    }
+  }
 }
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
@@ -364,43 +399,13 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     if (outbound_url) payload.outbound_url = outbound_url
 
-    Object.keys(payload).forEach((k) => {
-      if (payload[k] === undefined) delete payload[k]
-    })
-
-    const first = await supabase.from("product_clicks").insert(payload)
-    if (!first.error) return res.status(204).end()
-
-    const code = (first.error as any)?.code
-    if (code !== "PGRST204") {
-      console.error("[/api/intent] insert error:", {
-        message: first.error.message,
-        code,
-        details: (first.error as any).details,
-        hint: (first.error as any).hint,
-      })
-      return res.status(204).end()
-    }
-
-    try {
-      const cols = await getExistingColumns(supabase, "product_clicks")
-      const sanitized: Record<string, any> = {}
-      for (const [k, v] of Object.entries(payload)) {
-        if (cols.has(k)) sanitized[k] = v
-      }
-
-      const second = await supabase.from("product_clicks").insert(sanitized)
-      if (second.error) {
-        console.error("[/api/intent] insert retry error:", {
-          message: second.error.message,
-          code: (second.error as any)?.code,
-          details: (second.error as any).details,
-          hint: (second.error as any).hint,
-        })
-      }
-    } catch (e) {
-      console.error("[/api/intent] retry sanitize exception:", e)
-    }
+    await safeInsertNoIntrospection(
+      supabase as SupabaseClient,
+      "product_clicks",
+      payload,
+      "[/api/intent] product_clicks",
+      6
+    )
   } catch (e) {
     console.error("[/api/intent] Error:", e)
   }

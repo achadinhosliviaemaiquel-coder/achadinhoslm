@@ -279,74 +279,82 @@ function guessPlatformFromSignals(args: {
 
   if (has("tiktok.com") || args.utm.ttclid) return "tiktok";
   if (has("instagram.com")) return "instagram";
-  if (has("facebook.com") || has("fb.com") || has("m.facebook.com") || has("l.facebook.com") || args.utm.fbclid)
+  if (
+    has("facebook.com") ||
+    has("fb.com") ||
+    has("m.facebook.com") ||
+    has("l.facebook.com") ||
+    args.utm.fbclid
+  )
     return "facebook";
   if (has("google.") || args.utm.gclid) return "google";
 
   return "unknown";
 }
 
-async function getExistingColumns(supabase: SupabaseClient, table: string): Promise<Set<string>> {
-  const { data, error } = await supabase
-    .from("information_schema.columns")
-    .select("column_name")
-    .eq("table_schema", "public")
-    .eq("table_name", table);
-
-  if (error) throw error;
-  const set = new Set<string>();
-  for (const r of data ?? []) set.add(String((r as any).column_name));
-  return set;
+/**
+ * Extrai a coluna faltante do erro PGRST204:
+ * "Could not find the 'page_url' column of 'product_outbounds' in the schema cache"
+ */
+function extractMissingColumnFromPgrst204(message?: string): string | null {
+  if (!message) return null;
+  const m = message.match(/Could not find the '([^']+)' column/);
+  return m?.[1] ?? null;
 }
 
 /**
- * Inserção "best-effort":
+ * Inserção best-effort sem introspecção (SEM information_schema):
  * - tenta inserir payload completo
- * - se falhar por colunas inexistentes (PGRST204), busca colunas e reinserte somente o que existe
+ * - se der PGRST204, remove a coluna faltante e tenta de novo
+ * - repete até maxRetries (pra lidar com múltiplas colunas opcionais)
  */
-async function safeInsert(
+async function safeInsertNoIntrospection(
   supabase: SupabaseClient,
   table: string,
   payload: Record<string, any>,
   logPrefix: string,
+  maxRetries = 5,
 ) {
   const clean: Record<string, any> = { ...payload };
   Object.keys(clean).forEach((k) => {
     if (clean[k] === undefined) delete clean[k];
   });
 
-  const first = await supabase.from(table).insert(clean);
-  if (!first.error) return;
+  let current = clean;
 
-  const code = (first.error as any)?.code;
-  if (code !== "PGRST204") {
-    console.error(`${logPrefix} insert error:`, {
-      message: first.error.message,
-      code,
-      details: (first.error as any).details,
-      hint: (first.error as any).hint,
-    });
-    return;
-  }
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    const r = await supabase.from(table).insert(current);
+    if (!r.error) return;
 
-  try {
-    const cols = await getExistingColumns(supabase, table);
-    const sanitized: Record<string, any> = {};
-    for (const [k, v] of Object.entries(clean)) {
-      if (cols.has(k)) sanitized[k] = v;
-    }
-
-    const second = await supabase.from(table).insert(sanitized);
-    if (second.error) {
-      console.error(`${logPrefix} insert retry error:`, {
-        message: second.error.message,
-        code: (second.error as any)?.code,
-        details: (second.error as any).details,
-        hint: (second.error as any).hint,
+    const code = (r.error as any)?.code;
+    if (code !== "PGRST204") {
+      console.error(`${logPrefix} insert error:`, {
+        message: r.error.message,
+        code,
+        details: (r.error as any).details,
+        hint: (r.error as any).hint,
       });
+      return;
     }
-  } catch (e) {
-    console.error(`${logPrefix} retry sanitize exception:`, e);
+
+    const missing = extractMissingColumnFromPgrst204(r.error.message);
+    if (!missing || !(missing in current)) {
+      console.error(`${logPrefix} insert PGRST204 but could not sanitize:`, {
+        message: r.error.message,
+        code,
+      });
+      return;
+    }
+
+    // remove a coluna que não existe e tenta novamente
+    const next = { ...current };
+    delete next[missing];
+    current = next;
+
+    if (attempt === maxRetries) {
+      console.error(`${logPrefix} insert failed after retries (missing columns). Last missing: ${missing}`);
+      return;
+    }
   }
 }
 
@@ -414,7 +422,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const traffic = detectTrafficFromRequest(req, ua, args.referer);
     const utm = parseUtmFromRequest(req);
 
-    // Campo "referrer" (domínio/fonte) pode ser usado pelo SQL (detect_platform)
     const platform = guessPlatformFromSignals({
       referrer: args.referer,
       utm,
@@ -428,13 +435,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       created_at: nowIso,
       user_agent: ua,
       referer: args.referer,
-      referrer: args.referer, // mantém compat com o que você já usa
+      referrer: args.referer,
       session_id: args.session_id,
       traffic,
       origin: "go",
       outbound_url: args.final_url,
 
-      // ✅ novos campos (se existirem no banco, serão salvos; senão, safeInsert remove)
       utm_source: utm.utm_source,
       utm_medium: utm.utm_medium,
       utm_campaign: utm.utm_campaign,
@@ -445,18 +451,24 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       ttclid: utm.ttclid,
 
       page_url,
-      platform, // opcional: se você decidir criar coluna "platform"
+      platform, // só salva se existir coluna
     };
 
     try {
-      await safeInsert(supabase as SupabaseClient, "product_clicks", payload, "[/api/go] mirror product_clicks");
+      await safeInsertNoIntrospection(
+        supabase as SupabaseClient,
+        "product_clicks",
+        payload,
+        "[/api/go] mirror product_clicks",
+        6,
+      );
     } catch (e) {
       console.error("[/api/go] mirror product_clicks outbound exception:", e);
     }
   }
 
   // ===========================
-  // MODE SLUG: resolve slug -> product_id -> offer_id (com fallback obrigatório)
+  // MODE SLUG
   // ===========================
   if (slug_raw) {
     const storeFromSlug = normalizeStore(store_raw);
@@ -467,7 +479,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       return res.status(500).send("Tracking unavailable");
     }
 
-    // ✅ agora traz fallback links também
     const { data: prod, error: prodErr } = await supabase
       .from("products")
       .select("id, shopee_link, mercadolivre_link, amazon_link")
@@ -480,7 +491,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     }
     if (!prod?.id) return res.status(404).send("Product not found");
 
-    // ✅ FIX: remover order por coluna inexistente "price"
     const { data: offer, error: offerErr } = await supabase
       .from("store_offers")
       .select("id, url")
@@ -507,7 +517,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       return res.status(404).send("Offer not found");
     }
 
-    // injeta offer_id e segue para o MODE A logo abaixo
     (req.query as any).offer_id = String(offer.id);
   }
 
@@ -569,40 +578,46 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       // ignore
     }
 
+    // Tracking outbound (best-effort, sem quebrar redirect)
     let tracked = false;
     try {
       const ua = safeTrunc((req.headers["user-agent"] as string) ?? null, 500) ?? null;
       const utm = parseUtmFromRequest(req);
       const traffic = detectTrafficFromRequest(req, ua, referer);
 
-      const { error } = await supabase.from("product_outbounds").insert({
-        product_id: offer.product_id,
-        store: offer.platform,
-        offer_id: offer_id_num,
-        price_at_click,
-        currency_at_click,
-        price_verified_date,
-        session_id,
-        referer,
-        user_agent: ua,
-        created_at: nowIso,
+      await safeInsertNoIntrospection(
+        supabase as SupabaseClient,
+        "product_outbounds",
+        {
+          product_id: offer.product_id,
+          store: offer.platform,
+          offer_id: offer_id_num,
+          price_at_click,
+          currency_at_click,
+          price_verified_date,
+          session_id,
+          referer,
+          user_agent: ua,
+          created_at: nowIso,
 
-        traffic,
-        utm_source: utm.utm_source,
-        utm_medium: utm.utm_medium,
-        utm_campaign: utm.utm_campaign,
-        utm_content: utm.utm_content,
-        utm_term: utm.utm_term,
-        fbclid: utm.fbclid,
-        gclid: utm.gclid,
-        ttclid: utm.ttclid,
+          traffic,
+          utm_source: utm.utm_source,
+          utm_medium: utm.utm_medium,
+          utm_campaign: utm.utm_campaign,
+          utm_content: utm.utm_content,
+          utm_term: utm.utm_term,
+          fbclid: utm.fbclid,
+          gclid: utm.gclid,
+          ttclid: utm.ttclid,
 
-        // ✅ novos (se existirem no banco; se não, não faz diferença)
-        page_url,
-      });
+          // ✅ se não existir, será removido automaticamente via PGRST204
+          page_url,
+        },
+        "[/api/go] outbound",
+        6,
+      );
 
-      tracked = !error;
-      if (error) console.error("[/api/go] outbound insert error:", error);
+      tracked = true;
     } catch (e) {
       console.error("[/api/go] outbound exception:", e);
     }
@@ -647,30 +662,34 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const utm = parseUtmFromRequest(req);
     const traffic = detectTrafficFromRequest(req, ua, referer);
 
-    const { error } = await supabase.from("product_outbounds").insert({
-      product_id,
-      store,
-      session_id,
-      referer,
-      user_agent: ua,
-      created_at: nowIso,
+    await safeInsertNoIntrospection(
+      supabase as SupabaseClient,
+      "product_outbounds",
+      {
+        product_id,
+        store,
+        session_id,
+        referer,
+        user_agent: ua,
+        created_at: nowIso,
 
-      traffic,
-      utm_source: utm.utm_source,
-      utm_medium: utm.utm_medium,
-      utm_campaign: utm.utm_campaign,
-      utm_content: utm.utm_content,
-      utm_term: utm.utm_term,
-      fbclid: utm.fbclid,
-      gclid: utm.gclid,
-      ttclid: utm.ttclid,
+        traffic,
+        utm_source: utm.utm_source,
+        utm_medium: utm.utm_medium,
+        utm_campaign: utm.utm_campaign,
+        utm_content: utm.utm_content,
+        utm_term: utm.utm_term,
+        fbclid: utm.fbclid,
+        gclid: utm.gclid,
+        ttclid: utm.ttclid,
 
-      // ✅ novos (se existirem no banco)
-      page_url,
-    });
+        page_url, // pode não existir -> retry remove
+      },
+      "[/api/go] outbound (legacy)",
+      6,
+    );
 
-    tracked = !error;
-    if (error) console.error("[/api/go] outbound insert error (legacy):", error);
+    tracked = true;
   } catch (e) {
     console.error("[/api/go] outbound exception (legacy):", e);
   }
