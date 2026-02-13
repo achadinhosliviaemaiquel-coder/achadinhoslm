@@ -1,8 +1,17 @@
 {
   "crons": [
-    { "path": "/api/cron/ml-resolve-sec", "schedule": "0 9 * * *" },
-    { "path": "/api/cron/ml-prices", "schedule": "5 9 * * *" },
-    { "path": "/api/cron/sync-products-prices", "schedule": "10 9 * * *" }
+    {
+      "path": "/api/cron/ml-resolve-sec?cron_secret=SEU_CRON_SECRET",
+      "schedule": "0 9 * * *"
+    },
+    {
+      "path": "/api/cron/ml-prices?cron_secret=SEU_CRON_SECRET&offset=0&limit=10",
+      "schedule": "5 9 * * *"
+    },
+    {
+      "path": "/api/cron/sync-products-prices?cron_secret=SEU_CRON_SECRET",
+      "schedule": "10 9 * * *"
+    }
   ],
   "functions": {
     "api/**/*.ts": { "maxDuration": 300 }
@@ -15,6 +24,7 @@
   ],
   "rewrites": [
     { "source": "/api/(.*)", "destination": "/api/$1" },
+    { "source": "/go/:store/:slug", "destination": "/api/go?store=:store&slug=:slug" },
     { "source": "/(.*)", "destination": "/index.html" }
   ]
 }
