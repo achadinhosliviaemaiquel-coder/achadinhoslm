@@ -11,6 +11,10 @@
     {
       "path": "/api/cron/sync-products-prices?cron_secret=ml_cron_8f3c9a2b7e4d1f0c9a6b5d4e2a1f",
       "schedule": "10 9 * * *"
+    },
+    {
+      "path": "/api/cron/shopee-prices?cron_secret=ml_cron_8f3c9a2b7e4d1f0c9a6b5d4e2a1f&offset=0&limit=25",
+      "schedule": "15 9 * * *"
     }
   ],
   "functions": {
