@@ -59,6 +59,19 @@ type UTMFields = {
   ttclid: string | null
 }
 
+function emptyUtm(): UTMFields {
+  return {
+    utm_source: null,
+    utm_medium: null,
+    utm_campaign: null,
+    utm_content: null,
+    utm_term: null,
+    fbclid: null,
+    gclid: null,
+    ttclid: null,
+  }
+}
+
 function readUtmFromLocation(): UTMFields {
   try {
     const sp = new URLSearchParams(window.location.search)
@@ -73,22 +86,65 @@ function readUtmFromLocation(): UTMFields {
       ttclid: sp.get("ttclid"),
     }
   } catch {
-    return {
-      utm_source: null,
-      utm_medium: null,
-      utm_campaign: null,
-      utm_content: null,
-      utm_term: null,
-      fbclid: null,
-      gclid: null,
-      ttclid: null,
-    }
+    return emptyUtm()
   }
+}
+
+function readUtmFromReferrer(): UTMFields {
+  try {
+    const ref = typeof document !== "undefined" ? document.referrer || "" : ""
+    if (!ref) return emptyUtm()
+
+    const u = new URL(ref, "https://dummy.local")
+    const sp = u.searchParams
+    return {
+      utm_source: sp.get("utm_source"),
+      utm_medium: sp.get("utm_medium"),
+      utm_campaign: sp.get("utm_campaign"),
+      utm_content: sp.get("utm_content"),
+      utm_term: sp.get("utm_term"),
+      fbclid: sp.get("fbclid"),
+      gclid: sp.get("gclid"),
+      ttclid: sp.get("ttclid"),
+    }
+  } catch {
+    return emptyUtm()
+  }
+}
+
+function hasAnyAttributionSignals(utm: UTMFields) {
+  return Object.values(utm).some((v) => typeof v === "string" && v && v.length > 0)
 }
 
 function isFbIgInAppUA(ua: string) {
   const s = (ua || "").toLowerCase()
   return s.includes("fbav") || s.includes("fb_iab") || s.includes("instagram")
+}
+
+function isTikTokInAppUA(ua: string) {
+  const s = (ua || "").toLowerCase()
+  return (
+    s.includes("tiktok") ||
+    s.includes("ttwebview") ||
+    s.includes("bytedancewebview") ||
+    s.includes("bytedance") ||
+    s.includes("musical_ly") ||
+    s.includes("musically")
+  )
+}
+
+function refLooksSocialAds(ref: string) {
+  const s = (ref || "").toLowerCase()
+  return (
+    s.includes("facebook.com") ||
+    s.includes("l.facebook.com") ||
+    s.includes("instagram.com") ||
+    s.includes("l.instagram.com") ||
+    s.includes("tiktok.com") ||
+    s.includes("vm.tiktok.com") ||
+    s.includes("m.tiktok.com") ||
+    s.includes("ads.tiktok.com")
+  )
 }
 
 function detectTrafficFromSignals(utm: UTMFields): Traffic {
@@ -102,18 +158,25 @@ function detectTrafficFromSignals(utm: UTMFields): Traffic {
     utmMedium === "paid_social" ||
     utmMedium === "social_paid"
 
-  const looksFbIg =
+  // fontes sociais que você quer tratar como "ads" quando vier com sinais
+  const looksSocial =
     utmSource === "fb" ||
     utmSource === "facebook" ||
     utmSource === "ig" ||
-    utmSource === "instagram"
+    utmSource === "instagram" ||
+    utmSource === "tt" ||
+    utmSource === "tiktok"
 
   const hasClickId = Boolean(utm.fbclid || utm.gclid || utm.ttclid)
 
   const ua = typeof navigator !== "undefined" ? navigator.userAgent || "" : ""
-  const uaInApp = isFbIgInAppUA(ua)
+  const uaInApp = isFbIgInAppUA(ua) || isTikTokInAppUA(ua)
 
-  if (looksPaid || looksFbIg || hasClickId || uaInApp) return "ads"
+  const ref = typeof document !== "undefined" ? document.referrer || "" : ""
+  const refInSocial = refLooksSocialAds(ref)
+
+  // regra: se tem evidência de campanha/pago/clid/in-app/ref social => ads
+  if (hasClickId || looksPaid || (looksSocial && (looksPaid || hasClickId)) || uaInApp || refInSocial) return "ads"
   return "organic"
 }
 
@@ -127,10 +190,7 @@ type TrafficCtx = {
 
 function persistTrafficCtxIfUseful(ctx: TrafficCtx) {
   try {
-    const hasAny =
-      ctx.traffic === "ads" ||
-      Object.values(ctx.utm).some((v) => typeof v === "string" && v && v.length > 0)
-
+    const hasAny = ctx.traffic === "ads" || hasAnyAttributionSignals(ctx.utm)
     if (!hasAny) return
     localStorage.setItem(CTX_KEY, JSON.stringify(ctx))
   } catch {
@@ -150,32 +210,51 @@ function readTrafficCtx(): TrafficCtx | null {
   }
 }
 
-function resolveTrafficAndUtm(): { traffic: Traffic; utm: UTMFields } {
-  const utmNow = readUtmFromLocation()
-  const trafficNow = detectTrafficFromSignals(utmNow)
+function mergeUtmPreferFirst(a: UTMFields, b: UTMFields): UTMFields {
+  // mantém valores de "a" quando existirem; completa com "b"
+  return {
+    utm_source: a.utm_source ?? b.utm_source,
+    utm_medium: a.utm_medium ?? b.utm_medium,
+    utm_campaign: a.utm_campaign ?? b.utm_campaign,
+    utm_content: a.utm_content ?? b.utm_content,
+    utm_term: a.utm_term ?? b.utm_term,
+    fbclid: a.fbclid ?? b.fbclid,
+    gclid: a.gclid ?? b.gclid,
+    ttclid: a.ttclid ?? b.ttclid,
+  }
+}
 
-  const hasSignalsNow =
-    trafficNow === "ads" ||
-    Object.values(utmNow).some((v) => typeof v === "string" && v && v.length > 0)
+function resolveTrafficAndUtm(): { traffic: Traffic; utm: UTMFields } {
+  // 1) prioridade: querystring atual
+  const utmNow = readUtmFromLocation()
+
+  // 2) fallback: referrer
+  const utmRef = readUtmFromReferrer()
+
+  // 3) combina: preferir query, completar com referrer
+  const utmMerged = mergeUtmPreferFirst(utmNow, utmRef)
+
+  const trafficNow = detectTrafficFromSignals(utmMerged)
+  const hasSignalsNow = trafficNow === "ads" || hasAnyAttributionSignals(utmMerged)
 
   if (hasSignalsNow) {
     const ctx: TrafficCtx = {
       traffic: trafficNow,
-      utm: utmNow,
+      utm: utmMerged,
       expiresAt: Date.now() + 24 * 60 * 60 * 1000, // 24h
     }
     persistTrafficCtxIfUseful(ctx)
-    return { traffic: trafficNow, utm: utmNow }
+    return { traffic: trafficNow, utm: utmMerged }
   }
 
   const ctx = readTrafficCtx()
   if (ctx) return { traffic: ctx.traffic, utm: ctx.utm }
 
-  return { traffic: "organic", utm: utmNow }
+  return { traffic: "organic", utm: utmMerged }
 }
 
 /**
- * ✅ NOVO: chame isso em páginas de entrada (BridgePage/ProductPage)
+ * ✅ Chame isso em páginas de entrada (BridgePage/ProductPage)
  * para “plantar” o ctx de tráfego cedo (antes do clique).
  */
 export function seedTrafficCtxFromUrl() {
@@ -228,6 +307,7 @@ export function trackBuyClick(p: TrackBuyClickParams) {
       utm_source: utm.utm_source ?? undefined,
       utm_medium: utm.utm_medium ?? undefined,
       utm_campaign: utm.utm_campaign ?? undefined,
+      ttclid: utm.ttclid ?? undefined,
       value: isFinitePositive(p.price) ? p.price : undefined,
     })
   } catch {

@@ -20,12 +20,32 @@ function readHeader(req: VercelRequest, name: string): string {
   return (v as string | undefined) ?? "";
 }
 
+function readCronSecret(req: VercelRequest): string {
+  const h = readHeader(req, "x-cron-secret");
+  if (h) return h;
+
+  try {
+    const host = readHeader(req, "x-forwarded-host") || readHeader(req, "host");
+    const proto =
+      readHeader(req, "x-forwarded-proto") ||
+      (host?.includes("localhost") ? "http" : "https");
+    const url = new URL(req.url || "/", `${proto}://${host || "localhost"}`);
+    return url.searchParams.get("cron_secret") || "";
+  } catch {
+    return "";
+  }
+}
+
 function formatBRL(n: number) {
   return `R$ ${n.toFixed(2).replace(".", ",")}`;
 }
 
-function computeMinPriceLabel(prices: Array<number | null | undefined>): string | null {
-  const valid = prices.filter((p): p is number => typeof p === "number" && Number.isFinite(p) && p > 0);
+function computeMinPriceLabel(
+  prices: Array<number | null | undefined>,
+): string | null {
+  const valid = prices.filter(
+    (p): p is number => typeof p === "number" && Number.isFinite(p) && p > 0,
+  );
   if (!valid.length) return null;
   return formatBRL(Math.min(...valid));
 }
@@ -42,11 +62,15 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
   try {
     if (req.method !== "POST" && req.method !== "GET") {
-      return res.status(405).json({ ok: false, error: "Method Not Allowed", allowed: ["GET", "POST"] });
+      return res.status(405).json({
+        ok: false,
+        error: "Method Not Allowed",
+        allowed: ["GET", "POST"],
+      });
     }
 
-    const got = readHeader(req, "x-cron-secret");
-    if (!CRON_SECRET || got !== CRON_SECRET) {
+    const got = readCronSecret(req);
+    if (!CRON_SECRET || !got || got !== CRON_SECRET) {
       return res.status(401).json({ ok: false, error: "Unauthorized" });
     }
 
@@ -74,14 +98,26 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       .not("current_price_cents", "is", null);
 
     if (offErr) {
-      console.error("[sync-products-prices] offers error", { reqId, message: offErr.message });
-      return res.status(500).json({ ok: false, error: offErr.message, reqId, ms: Date.now() - startedAt });
+      console.error("[sync-products-prices] offers error", {
+        reqId,
+        message: offErr.message,
+      });
+      return res.status(500).json({
+        ok: false,
+        error: offErr.message,
+        reqId,
+        ms: Date.now() - startedAt,
+      });
     }
 
     // 2) Agrupar por produto: menor preço por plataforma
     const byProduct = new Map<
       string,
-      { shopee_price: number | null; mercadolivre_price: number | null; amazon_price: number | null }
+      {
+        shopee_price: number | null;
+        mercadolivre_price: number | null;
+        amazon_price: number | null;
+      }
     >();
 
     for (const o of (offers || []) as OfferRow[]) {
@@ -91,15 +127,27 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       if (!Number.isFinite(cents) || cents <= 0) continue;
 
       const price = cents / 100;
-      const entry = byProduct.get(pid) ?? { shopee_price: null, mercadolivre_price: null, amazon_price: null };
+      const entry = byProduct.get(pid) ?? {
+        shopee_price: null,
+        mercadolivre_price: null,
+        amazon_price: null,
+      };
 
       if (o.platform === "shopee") {
-        entry.shopee_price = entry.shopee_price == null ? price : Math.min(entry.shopee_price, price);
+        entry.shopee_price =
+          entry.shopee_price == null
+            ? price
+            : Math.min(entry.shopee_price, price);
       } else if (o.platform === "mercadolivre") {
         entry.mercadolivre_price =
-          entry.mercadolivre_price == null ? price : Math.min(entry.mercadolivre_price, price);
+          entry.mercadolivre_price == null
+            ? price
+            : Math.min(entry.mercadolivre_price, price);
       } else if (o.platform === "amazon") {
-        entry.amazon_price = entry.amazon_price == null ? price : Math.min(entry.amazon_price, price);
+        entry.amazon_price =
+          entry.amazon_price == null
+            ? price
+            : Math.min(entry.amazon_price, price);
       }
 
       byProduct.set(pid, entry);
@@ -135,12 +183,22 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       const batch = productIds.slice(i, i + BATCH);
       const { data: prows, error: pErr } = await supabase
         .from("products")
-        .select("id, shopee_price, mercadolivre_price, amazon_price, price_label")
+        .select(
+          "id, shopee_price, mercadolivre_price, amazon_price, price_label",
+        )
         .in("id", batch);
 
       if (pErr) {
-        console.error("[sync-products-prices] products read error", { reqId, message: pErr.message });
-        return res.status(500).json({ ok: false, error: pErr.message, reqId, ms: Date.now() - startedAt });
+        console.error("[sync-products-prices] products read error", {
+          reqId,
+          message: pErr.message,
+        });
+        return res.status(500).json({
+          ok: false,
+          error: pErr.message,
+          reqId,
+          ms: Date.now() - startedAt,
+        });
       }
 
       for (const r of (prows || []) as any[]) {
@@ -173,13 +231,18 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         continue;
       }
 
-      const nextLabel = computeMinPriceLabel([next.shopee_price, next.mercadolivre_price, next.amazon_price]);
+      const nextLabel = computeMinPriceLabel([
+        next.shopee_price,
+        next.mercadolivre_price,
+        next.amazon_price,
+      ]);
 
       const changed =
         curr.shopee_price !== next.shopee_price ||
         curr.mercadolivre_price !== next.mercadolivre_price ||
         curr.amazon_price !== next.amazon_price ||
-        String(curr.price_label ?? "").trim() !== String(nextLabel ?? "").trim();
+        String(curr.price_label ?? "").trim() !==
+          String(nextLabel ?? "").trim();
 
       if (!changed) continue;
 
@@ -219,9 +282,16 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           if ((patch as any)[k] === undefined) delete (patch as any)[k];
         });
 
-        const { error: uErr } = await supabase.from("products").update(patch).eq("id", id);
+        const { error: uErr } = await supabase
+          .from("products")
+          .update(patch)
+          .eq("id", id);
         if (uErr) {
-          console.error("[sync-products-prices] update error", { reqId, id, message: uErr.message });
+          console.error("[sync-products-prices] update error", {
+            reqId,
+            id,
+            message: uErr.message,
+          });
           return res.status(500).json({
             ok: false,
             error: uErr.message,
@@ -251,7 +321,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       ms: Date.now() - startedAt,
     });
   } catch (e: any) {
-    console.error("[sync-products-prices] fatal", { reqId, message: e?.message, stack: e?.stack });
+    console.error("[sync-products-prices] fatal", {
+      reqId,
+      message: e?.message,
+      stack: e?.stack,
+    });
     return res.status(500).json({
       ok: false,
       error: e?.message ?? "unknown error",

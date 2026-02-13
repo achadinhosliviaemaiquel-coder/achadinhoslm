@@ -2,7 +2,7 @@ import { Button } from "@/components/ui/button"
 import { ExternalLink } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { trackBuyClick } from "@/lib/clickTracking"
-import React from "react"
+import React, { useMemo } from "react"
 
 type Store = "shopee" | "mercadolivre" | "amazon"
 
@@ -57,6 +57,15 @@ function resolveCtaLabel(opts: { storeShort: string; price?: number; isPrimary?:
   return hasValidPrice ? `Ver na ${storeShort}` : `Ver oferta na ${storeShort}`
 }
 
+// ✅ In-app detection: importante para evitar _blank (drop no FB/IG/TikTok)
+function isInAppBrowserUA(ua: string) {
+  return /FBAN|FBAV|FB_IAB|Instagram|TikTok|BytedanceWebview|Line|Pinterest|Snapchat|WhatsApp/i.test(ua)
+}
+
+function isMobileUA(ua: string) {
+  return /Android|iPhone|iPad|iPod/i.test(ua)
+}
+
 export function StoreButton({
   store,
   productId,
@@ -75,6 +84,22 @@ export function StoreButton({
   const isDisabled = disabled || !href || href === "#"
   const label = overrideLabel || resolveCtaLabel({ storeShort: ui.short, price, isPrimary })
 
+  const effectiveTarget = useMemo<"_blank" | "_self">(() => {
+    if (target !== "_blank") return "_self"
+    if (typeof navigator === "undefined") return "_blank"
+
+    const ua = navigator.userAgent || ""
+    // ✅ in-app + mobile: força mesma aba (menos bug e menos drop)
+    if (isInAppBrowserUA(ua) || isMobileUA(ua)) return "_self"
+
+    return "_blank"
+  }, [target])
+
+  const rel =
+    effectiveTarget === "_blank"
+      ? "noopener noreferrer nofollow sponsored"
+      : "nofollow sponsored"
+
   const handleClick = (e: React.MouseEvent<HTMLAnchorElement>) => {
     if (isDisabled) {
       e.preventDefault()
@@ -90,12 +115,11 @@ export function StoreButton({
         store,
         price,
         priceCents: typeof price === "number" ? Math.round(price * 100) : undefined,
-        outboundUrl: href,
+        outboundUrl: href, // normalmente /api/go?... (ok p/ debug)
       })
     } catch {
       // no-op
     }
-    // ✅ deixa o navegador navegar normalmente para o href (que deve ser /api/go?...)
   }
 
   return (
@@ -112,13 +136,13 @@ export function StoreButton({
     >
       <a
         href={isDisabled ? undefined : href}
-        target={target}
+        target={effectiveTarget}
         onClick={handleClick}
-        rel={target === "_blank" ? "noopener noreferrer nofollow sponsored" : "nofollow sponsored"}
-        aria-label={`${label} (abre ${target === "_blank" ? "em nova aba" : "na mesma aba"})`}
+        rel={rel}
+        aria-label={`${label} (abre ${effectiveTarget === "_blank" ? "em nova aba" : "na mesma aba"})`}
       >
         {label}
-        {showExternalIcon && target === "_blank" && <ExternalLink className="ml-2 h-4 w-4" />}
+        {showExternalIcon && effectiveTarget === "_blank" && <ExternalLink className="ml-2 h-4 w-4" />}
       </a>
     </Button>
   )

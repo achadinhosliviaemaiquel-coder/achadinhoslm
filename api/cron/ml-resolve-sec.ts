@@ -41,6 +41,22 @@ function readHeader(req: VercelRequest, name: string): string {
   return (v as string | undefined) ?? "";
 }
 
+function readCronSecret(req: VercelRequest): string {
+  const h = readHeader(req, "x-cron-secret");
+  if (h) return h;
+
+  try {
+    const host = readHeader(req, "x-forwarded-host") || readHeader(req, "host");
+    const proto =
+      readHeader(req, "x-forwarded-proto") ||
+      (host?.includes("localhost") ? "http" : "https");
+    const url = new URL(req.url || "/", `${proto}://${host || "localhost"}`);
+    return url.searchParams.get("cron_secret") || "";
+  } catch {
+    return "";
+  }
+}
+
 function normalizeCookieHeader(cookie: string) {
   let s = (cookie || "").trim();
   s = s.replace(/^cookie\s*:\s*/i, "");
@@ -57,7 +73,9 @@ function readCookieFromFile(): string {
 
   let cookie = normalizeCookieHeader(json.cookie || "");
   if (!cookie && typeof json.cookie_base64 === "string") {
-    cookie = normalizeCookieHeader(Buffer.from(json.cookie_base64, "base64").toString("utf8"));
+    cookie = normalizeCookieHeader(
+      Buffer.from(json.cookie_base64, "base64").toString("utf8"),
+    );
   }
 
   if (!cookie) throw new Error("ML_COOKIE_FILE exists but cookie is empty");
@@ -149,7 +167,8 @@ async function resolveFinalUrl(url: string, cookie: string) {
   });
 
   const anyRes = res as any;
-  const finalUrl = typeof anyRes.url === "string" && anyRes.url ? anyRes.url : url;
+  const finalUrl =
+    typeof anyRes.url === "string" && anyRes.url ? anyRes.url : url;
 
   return { res, finalUrl };
 }
@@ -196,13 +215,15 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
   };
 
   try {
-    const got = readHeader(req, "x-cron-secret");
-    if (got !== CRON_SECRET) {
+    const got = readCronSecret(req);
+    if (!got || got !== CRON_SECRET) {
       return res.status(401).json({ ok: false, error: "Unauthorized" });
     }
 
     const cookie = getCookie();
-    log(`Cookie loaded from ${COOKIE_B64 ? "ML_COOKIE_B64" : `ML_COOKIE_FILE (${COOKIE_FILE})`}`);
+    log(
+      `Cookie loaded from ${COOKIE_B64 ? "ML_COOKIE_B64" : `ML_COOKIE_FILE (${COOKIE_FILE})`}`,
+    );
 
     const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, {
       auth: { persistSession: false },
@@ -263,7 +284,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         }
       } catch (e: any) {
         httpFailed += 1;
-        log(`FETCH error product=${p.id} url=${original} err=${String(e?.message || e)}`);
+        log(
+          `FETCH error product=${p.id} url=${original} err=${String(e?.message || e)}`,
+        );
       }
 
       const mlbFromFinal = finalUrl ? extractMlExternalId(finalUrl) : null;
@@ -311,12 +334,16 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
       if (upsertErr) {
         failed += 1;
-        log(`Upsert store_offers failed product=${p.id} mlb=${mlb} err=${upsertErr.message}`);
+        log(
+          `Upsert store_offers failed product=${p.id} mlb=${mlb} err=${upsertErr.message}`,
+        );
         return;
       }
 
       upsertedOffers += 1;
-      log(`OK product=${p.id} mlb=${mlb} url=${offerUrl} (from ${mlbFromFinal ? "finalUrl" : "source_url"})`);
+      log(
+        `OK product=${p.id} mlb=${mlb} url=${offerUrl} (from ${mlbFromFinal ? "finalUrl" : "source_url"})`,
+      );
     });
 
     if (errors.length) {
@@ -346,6 +373,8 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     });
   } catch (e: any) {
     console.error(e);
-    return res.status(500).json({ ok: false, error: e?.message || "Unknown error" });
+    return res
+      .status(500)
+      .json({ ok: false, error: e?.message || "Unknown error" });
   }
 }

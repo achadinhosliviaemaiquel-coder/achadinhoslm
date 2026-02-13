@@ -60,7 +60,11 @@ function relativeError(a: number, b: number) {
   return Math.abs(a - b) / denom
 }
 
-async function getExpectedPrice(supabase: SupabaseClient, productId: string, store: Store): Promise<number | null> {
+async function getExpectedPrice(
+  supabase: SupabaseClient,
+  productId: string,
+  store: Store
+): Promise<number | null> {
   const { data, error } = await supabase
     .from("products")
     .select("shopee_price, mercadolivre_price, amazon_price")
@@ -130,28 +134,105 @@ function parseBodyIfNeeded(req: VercelRequest): any | null {
   return null
 }
 
-/**
- * Classifica tráfego a partir do referer/referrer e user-agent:
- * - ads se tem utm_medium=paid, utm_source fb/ig, fbclid, ou user-agent de in-app FB/IG
- * - caso contrário organic
- */
-function detectTraffic(req: VercelRequest): Traffic {
-  const ua = String(req.headers["user-agent"] ?? "")
-  const ref = String((req.headers["referer"] as string) ?? (req.headers["referrer"] as string) ?? "")
+type UTMFields = {
+  utm_source: string | null
+  utm_medium: string | null
+  utm_campaign: string | null
+  utm_content: string | null
+  utm_term: string | null
+  fbclid: string | null
+  gclid: string | null
+  ttclid: string | null
+}
 
-  let sp: URLSearchParams | null = null
-  try {
-    if (ref) {
-      const u = new URL(ref, "https://dummy.local")
-      sp = u.searchParams
-    }
-  } catch {
-    sp = null
+function pickString(v: unknown): string | null {
+  const s = String(v ?? "").trim()
+  return s ? s : null
+}
+
+function getHeaderReferer(req: VercelRequest): string {
+  return String((req.headers["referer"] as string) ?? (req.headers["referrer"] as string) ?? "")
+}
+
+/**
+ * UTMs do payload (query/body). Se vazio, tenta do referer.
+ */
+function resolveUtm(req: VercelRequest, q: any): UTMFields {
+  const fromPayload: UTMFields = {
+    utm_source: pickString(q.utm_source),
+    utm_medium: pickString(q.utm_medium),
+    utm_campaign: pickString(q.utm_campaign),
+    utm_content: pickString(q.utm_content),
+    utm_term: pickString(q.utm_term),
+    fbclid: pickString(q.fbclid),
+    gclid: pickString(q.gclid),
+    ttclid: pickString(q.ttclid),
   }
 
-  const utmMedium = (sp?.get("utm_medium") || "").toLowerCase()
-  const utmSource = (sp?.get("utm_source") || "").toLowerCase()
-  const fbclid = sp?.get("fbclid") || ""
+  const hasAny =
+    !!fromPayload.utm_source ||
+    !!fromPayload.utm_medium ||
+    !!fromPayload.utm_campaign ||
+    !!fromPayload.utm_content ||
+    !!fromPayload.utm_term ||
+    !!fromPayload.fbclid ||
+    !!fromPayload.gclid ||
+    !!fromPayload.ttclid
+
+  if (hasAny) return fromPayload
+
+  const ref = getHeaderReferer(req)
+  if (!ref) {
+    return {
+      utm_source: null,
+      utm_medium: null,
+      utm_campaign: null,
+      utm_content: null,
+      utm_term: null,
+      fbclid: null,
+      gclid: null,
+      ttclid: null,
+    }
+  }
+
+  try {
+    const u = new URL(ref, "https://dummy.local")
+    const sp = u.searchParams
+    return {
+      utm_source: sp.get("utm_source"),
+      utm_medium: sp.get("utm_medium"),
+      utm_campaign: sp.get("utm_campaign"),
+      utm_content: sp.get("utm_content"),
+      utm_term: sp.get("utm_term"),
+      fbclid: sp.get("fbclid"),
+      gclid: sp.get("gclid"),
+      ttclid: sp.get("ttclid"),
+    }
+  } catch {
+    return {
+      utm_source: null,
+      utm_medium: null,
+      utm_campaign: null,
+      utm_content: null,
+      utm_term: null,
+      fbclid: null,
+      gclid: null,
+      ttclid: null,
+    }
+  }
+}
+
+/**
+ * Regra:
+ * - ads se: clid OU utm_medium paid/cpc/etc OU in-app/ref social
+ * - e também trata social source (fb/ig/tt/tiktok) como ads quando acompanhado de paid/clid
+ */
+function detectTraffic(req: VercelRequest, utm: UTMFields): Traffic {
+  const ua = String(req.headers["user-agent"] ?? "")
+  const ref = getHeaderReferer(req)
+
+  const utmMedium = (utm.utm_medium || "").toLowerCase()
+  const utmSource = (utm.utm_source || "").toLowerCase()
 
   const looksLikePaid =
     utmMedium === "paid" ||
@@ -160,19 +241,32 @@ function detectTraffic(req: VercelRequest): Traffic {
     utmMedium === "paid_social" ||
     utmMedium === "social_paid"
 
-  const looksLikeFbIg =
+  const looksLikeSocialSource =
     utmSource === "fb" ||
     utmSource === "facebook" ||
     utmSource === "ig" ||
-    utmSource === "instagram"
+    utmSource === "instagram" ||
+    utmSource === "tt" ||
+    utmSource === "tiktok"
 
-  const uaIsFbIgInApp =
-    ua.includes("FBAV") || ua.includes("FB_IAB") || ua.toLowerCase().includes("instagram")
+  const hasClid = Boolean(utm.fbclid || utm.gclid || utm.ttclid)
 
-  const refIsFbIg =
-    ref.includes("facebook.com") || ref.includes("l.facebook.com") || ref.includes("instagram.com")
+  const uaIsInApp =
+    ua.includes("FBAV") ||
+    ua.includes("FB_IAB") ||
+    /Instagram/i.test(ua) ||
+    /TikTok|TTWebView|BytedanceWebview|ByteDanceWebview|Bytedance|musical_ly|musically/i.test(ua)
 
-  if (fbclid || looksLikePaid || looksLikeFbIg || uaIsFbIgInApp || refIsFbIg) return "ads"
+  const refIsSocial =
+    /facebook\.com|l\.facebook\.com|instagram\.com|l\.instagram\.com|tiktok\.com|vm\.tiktok\.com|m\.tiktok\.com|ads\.tiktok\.com/i.test(
+      ref
+    )
+
+  if (hasClid) return "ads"
+  if (looksLikePaid) return "ads"
+  if (uaIsInApp || refIsSocial) return "ads"
+  if (looksLikeSocialSource && (looksLikePaid || hasClid)) return "ads"
+
   return "organic"
 }
 
@@ -187,11 +281,6 @@ async function getExistingColumns(supabase: SupabaseClient, table: string): Prom
   const set = new Set<string>()
   for (const r of data ?? []) set.add(String((r as any).column_name))
   return set
-}
-
-function pickString(v: unknown): string | null {
-  const s = String(v ?? "").trim()
-  return s ? s : null
 }
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
@@ -209,25 +298,16 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     const q: any = bodyObj && typeof bodyObj === "object" ? bodyObj : req.query
 
     const product_id = String(q.product_id || "").trim()
-    const storeRaw = String(q.store || "").trim()
-    const store = normalizeStore(storeRaw)
-
+    const store = normalizeStore(String(q.store || "").trim())
     if (!product_id || !store) return res.status(204).end()
 
     const product_slug = pickString(q.product_slug)
     const category = pickString(q.category)
     const outbound_url = pickString(q.outbound_url)
 
-    // UTM/click ids (opcionais)
-    const utm_source = pickString(q.utm_source)
-    const utm_medium = pickString(q.utm_medium)
-    const utm_campaign = pickString(q.utm_campaign)
-    const utm_content = pickString(q.utm_content)
-    const utm_term = pickString(q.utm_term)
-    const fbclid = pickString(q.fbclid)
-    const gclid = pickString(q.gclid)
-    const ttclid = pickString(q.ttclid)
+    const utm = resolveUtm(req, q)
 
+    // preço
     const priceCentsFromClient = toIntOrNull(q.price_cents)
     let price: number | null = null
     let price_cents: number | null = null
@@ -243,7 +323,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         if (expected != null && expected > 0) {
           const before = price
           price = sanitizePriceByExpected(price, expected)
-
           if (before !== price) {
             console.warn("[/api/intent] adjusted price", { product_id, store, before, after: price, expected })
           }
@@ -253,9 +332,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       price_cents = price != null ? roundCents(price) : null
     }
 
-    // ✅ prioridade: payload traffic -> detectTraffic(req)
+    // traffic: payload > detect
     const trafficFromClient = normalizeTraffic(q.traffic)
-    const traffic: Traffic = trafficFromClient ?? detectTraffic(req)
+    const traffic: Traffic = trafficFromClient ?? detectTraffic(req, utm)
 
     const payload: Record<string, any> = {
       kind: "intent",
@@ -265,36 +344,33 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       category,
       traffic,
 
-      // utm/click ids (só grava se existir colunas)
-      utm_source,
-      utm_medium,
-      utm_campaign,
-      utm_content,
-      utm_term,
-      fbclid,
-      gclid,
-      ttclid,
+      utm_source: utm.utm_source,
+      utm_medium: utm.utm_medium,
+      utm_campaign: utm.utm_campaign,
+      utm_content: utm.utm_content,
+      utm_term: utm.utm_term,
+      fbclid: utm.fbclid,
+      gclid: utm.gclid,
+      ttclid: utm.ttclid,
 
       price: price != null && Number.isFinite(price) ? price : null,
       price_cents: price_cents != null && Number.isFinite(price_cents) ? price_cents : null,
+
       user_agent: req.headers["user-agent"] ?? null,
-      referrer: (req.headers["referer"] as string) ?? null,
-      referer: (req.headers["referer"] as string) ?? null,
+      referer: getHeaderReferer(req) || null,
+      referrer: getHeaderReferer(req) || null,
       created_at: new Date().toISOString(),
     }
 
     if (outbound_url) payload.outbound_url = outbound_url
 
-    // limpa undefined
     Object.keys(payload).forEach((k) => {
       if (payload[k] === undefined) delete payload[k]
     })
 
-    // tentativa normal
     const first = await supabase.from("product_clicks").insert(payload)
     if (!first.error) return res.status(204).end()
 
-    // Se o erro for "coluna não existe" (schema cache), tenta novamente removendo colunas inexistentes
     const code = (first.error as any)?.code
     if (code !== "PGRST204") {
       console.error("[/api/intent] insert error:", {
@@ -302,12 +378,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         code,
         details: (first.error as any).details,
         hint: (first.error as any).hint,
-        payload,
       })
       return res.status(204).end()
     }
 
-    // Retry: remove campos que não existem na tabela
     try {
       const cols = await getExistingColumns(supabase, "product_clicks")
       const sanitized: Record<string, any> = {}
@@ -322,7 +396,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           code: (second.error as any)?.code,
           details: (second.error as any).details,
           hint: (second.error as any).hint,
-          sanitized,
         })
       }
     } catch (e) {

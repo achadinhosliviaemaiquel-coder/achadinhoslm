@@ -1,4 +1,4 @@
-// ml-prices.ts
+// api/cron/ml-prices.ts
 import type { VercelRequest, VercelResponse } from "@vercel/node";
 import { createClient } from "@supabase/supabase-js";
 import crypto from "crypto";
@@ -9,15 +9,13 @@ type StoreOffer = {
   id: number;
   product_id: string;
   platform: string;
-  external_id: string | null; // MLBxxxx / MLBUxxxx (se existir)
+  external_id: string | null; // MLBxxxx / MLBUxxxx
   url: string | null;
   is_active: boolean;
 };
 
-type ImportRow = { product_id: string; sec_url: string | null };
-
 type JobCounters = {
-  scanned: number;
+  scanned: number; // quantos offers efetivamente tentamos processar (1 por offer)
   updated: number;
   failed: number;
   http429: number;
@@ -25,8 +23,9 @@ type JobCounters = {
   unavailableDeactivated: number;
   missingSecUrlSkipped: number;
   invalidExternalIdSkipped: number;
-  cookieMissingOrExpired: number; // gate/captcha/login
+  cookieMissingOrExpired: number;
   priceNotFound: number;
+  timedOut: number;
 };
 
 const SUPABASE_URL = process.env.SUPABASE_URL!;
@@ -34,28 +33,29 @@ const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY!;
 const CRON_SECRET = process.env.CRON_SECRET!;
 
 const PLATFORM_LABEL = process.env.ML_PLATFORM_LABEL || "mercadolivre";
-const BATCH_SIZE = Number(process.env.ML_PRICE_BATCH_SIZE || "150");
-const MAX_CONCURRENCY = Number(process.env.ML_PRICE_CONCURRENCY || "2");
-const MAX_RETRIES = Number(process.env.ML_PRICE_MAX_RETRIES || "2");
+
+// defaults seguros para serverless
+const DEFAULT_LIMIT = Number(process.env.ML_PRICE_BATCH_SIZE || "10"); // <- não use 150 em serverless
+const MAX_CONCURRENCY = Number(process.env.ML_PRICE_CONCURRENCY || "1");
+const MAX_RETRIES = Number(process.env.ML_PRICE_MAX_RETRIES || "1");
 const BOT_FAILFAST_THRESHOLD = Number(
-  process.env.ML_PRICE_BOT_FAILFAST_THRESHOLD || "8",
+  process.env.ML_PRICE_BOT_FAILFAST_THRESHOLD || "3",
 );
 
-// ✅ Local/dev fallback (não usar em produção)
+// cookie
 const COOKIE_FILE = process.env.ML_COOKIE_FILE || "./ml-cookie.json";
-// ✅ Produção (Vercel): base64 do JSON do cookie (ex: {"cookie":"a=b; c=d"})
 const COOKIE_B64 = process.env.ML_COOKIE_B64 || "";
-
-// ✅ valida cookie em /p/ (mais estável que homepage)
 const COOKIE_TEST_URL =
   process.env.ML_COOKIE_TEST_URL ||
   "https://www.mercadolivre.com.br/p/MLB19698479";
 
-// jitter default (ms)
-const JITTER_MIN_MS = Number(process.env.ML_JITTER_MIN_MS || "120");
-const JITTER_MAX_MS = Number(process.env.ML_JITTER_MAX_MS || "420");
+// jitter / timeouts
+const JITTER_MIN_MS = Number(process.env.ML_JITTER_MIN_MS || "80");
+const JITTER_MAX_MS = Number(process.env.ML_JITTER_MAX_MS || "220");
+const FETCH_TIMEOUT_MS = Number(process.env.ML_FETCH_TIMEOUT_MS || "8000");
 
-const FETCH_TIMEOUT_MS = Number(process.env.ML_FETCH_TIMEOUT_MS || "25000");
+// budget de execução (antes da Vercel matar)
+const MAX_RUN_MS = Number(process.env.ML_PRICE_MAX_RUN_MS || "45000"); // 45s
 
 function utcDateString(d = new Date()) {
   const y = d.getUTCFullYear();
@@ -104,7 +104,6 @@ function readHeader(req: VercelRequest, name: string): string {
 }
 
 function readCronSecret(req: VercelRequest): string {
-  // Prefer header, fallback query (?cron_secret=...)
   const h = readHeader(req, "x-cron-secret");
   if (h) return h;
 
@@ -155,8 +154,7 @@ function normalizeCookieHeader(cookie: string) {
 }
 
 function readCookieFromEnvOrFile(): { cookie: string; source: "b64" | "file" } {
-  // 1) Produção: ML_COOKIE_B64 -> JSON -> cookie
-  if (COOKIE_B64) {
+  if (COOKIE_B64 && COOKIE_B64.trim()) {
     let parsed: any;
     try {
       const jsonStr = Buffer.from(COOKIE_B64, "base64").toString("utf8");
@@ -166,25 +164,19 @@ function readCookieFromEnvOrFile(): { cookie: string; source: "b64" | "file" } {
     }
 
     let cookie = typeof parsed.cookie === "string" ? parsed.cookie : "";
-
-    // ou cookie em base64 dentro do JSON
     if (!cookie && typeof parsed.cookie_base64 === "string") {
       cookie = Buffer.from(parsed.cookie_base64, "base64").toString("utf8");
     }
 
     cookie = normalizeCookieHeader(cookie || "");
     if (!cookie) throw new Error("ML_COOKIE_B64 provided but cookie is empty");
-
     return { cookie, source: "b64" };
   }
 
-  // 2) Local/dev: arquivo
   const p = path.resolve(process.cwd(), COOKIE_FILE);
   if (!fs.existsSync(p)) throw new Error(`ML_COOKIE_FILE not found: ${p}`);
 
-  // remove BOM caso editor salve com BOM
   const raw = fs.readFileSync(p, "utf8").replace(/^\uFEFF/, "");
-
   let json: any;
   try {
     json = JSON.parse(raw);
@@ -193,15 +185,12 @@ function readCookieFromEnvOrFile(): { cookie: string; source: "b64" | "file" } {
   }
 
   let cookie = typeof json.cookie === "string" ? json.cookie : "";
-
-  // ou cookie em base64
   if (!cookie && typeof json.cookie_base64 === "string") {
     cookie = Buffer.from(json.cookie_base64, "base64").toString("utf8");
   }
 
   cookie = normalizeCookieHeader(cookie || "");
   if (!cookie) throw new Error("ML_COOKIE_FILE exists but cookie is empty");
-
   return { cookie, source: "file" };
 }
 
@@ -215,8 +204,6 @@ function buildBrowserHeaders(cookie: string) {
     "upgrade-insecure-requests": "1",
     dnt: "1",
     referer: "https://www.mercadolivre.com.br/",
-
-    // fingerprint básico
     "sec-fetch-site": "same-origin",
     "sec-fetch-mode": "navigate",
     "sec-fetch-dest": "document",
@@ -225,43 +212,10 @@ function buildBrowserHeaders(cookie: string) {
       '"Chromium";v="122", "Not(A:Brand";v="24", "Google Chrome";v="122"',
     "sec-ch-ua-mobile": "?0",
     "sec-ch-ua-platform": '"Windows"',
-
     "user-agent":
       "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
     cookie,
   } as Record<string, string>;
-}
-
-/**
- * Gate real (captcha/login/WAF) vs falso positivo.
- * Homepage pode conter strings "captcha" em scripts: valida cookie em /p/ e usa heurística mais dura.
- */
-function isHardGate(html: string, finalUrl: string) {
-  const s = html.toLowerCase();
-
-  const urlSignals =
-    /\/(authorization|auth|login)\b/i.test(finalUrl) ||
-    /\/(ingreso|entrar)\b/i.test(finalUrl);
-
-  const hardSignals =
-    s.includes("hcaptcha") ||
-    s.includes("g-recaptcha") ||
-    s.includes("recaptcha") ||
-    s.includes("datadome") ||
-    s.includes("access denied") ||
-    s.includes("verify you are human") ||
-    (s.includes("verifique") && (s.includes("robô") || s.includes("robo"))) ||
-    s.includes("não sou um robô");
-
-  return urlSignals || hardSignals;
-}
-
-function looksLikeRealMlPage(html: string) {
-  return (
-    html.includes("__NEXT_DATA__") ||
-    html.toLowerCase().includes("mercadolivre") ||
-    /<title[^>]*>[\s\S]*<\/title>/i.test(html)
-  );
 }
 
 function shortTitle(html: string) {
@@ -270,42 +224,93 @@ function shortTitle(html: string) {
   return t ? t.slice(0, 140) : null;
 }
 
-async function validateCookie(cookie: string, log: (s: string) => void) {
-  const testUrl = COOKIE_TEST_URL;
-  log(`Validating cookie using testUrl=${testUrl}`);
+function looksLikeLoginOrBot(html: string, finalUrl: string) {
+  const s = html.toLowerCase();
 
-  await jitter();
+  const botSignals =
+    s.includes("hcaptcha") ||
+    s.includes("g-recaptcha") ||
+    s.includes("recaptcha") ||
+    s.includes("captcha") ||
+    s.includes("challenge") ||
+    s.includes("datadome") ||
+    s.includes("access denied") ||
+    (s.includes("verifique") && (s.includes("robô") || s.includes("robo"))) ||
+    s.includes("não sou um robô");
 
-  const res = await fetch(testUrl, {
-    method: "GET",
-    headers: buildBrowserHeaders(cookie),
-    redirect: "follow",
-  });
+  const loginSignals =
+    s.includes("iniciar sessão") ||
+    s.includes("inicie sessão") ||
+    s.includes("entrar na sua conta") ||
+    (s.includes("identificação") && s.includes("e-mail")) ||
+    s.includes("ingresar") ||
+    s.includes("iniciar sesion");
 
-  const anyRes = res as any;
-  const finalUrl =
-    typeof anyRes.url === "string" && anyRes.url ? anyRes.url : testUrl;
+  const urlSignals =
+    /\/(authorization|auth|login)\b/i.test(finalUrl) ||
+    /\/(ingreso|entrar)\b/i.test(finalUrl);
 
-  const html = await res.text();
-  const title = shortTitle(html);
+  return botSignals || loginSignals || urlSignals;
+}
 
-  if (!res.ok) {
-    log(
-      `Cookie validation HTTP ${res.status} title=${title ?? "n/a"} finalUrl=${finalUrl}`,
-    );
-    return;
+// NÃO vamos tentar /sec/ (isso é tracking e normalmente cai em social)
+function isSecUrl(url: string) {
+  return (url || "").toLowerCase().includes("/sec/");
+}
+
+function cleanMlUrl(input: string): string | null {
+  try {
+    const u = new URL(input);
+
+    const kill = [
+      "forceInApp",
+      "forceinapp",
+      "ref",
+      "matt_tool",
+      "matt_word",
+      "matt_campaign",
+      "matt_source",
+      "matt_custom",
+      "matt_ad_id",
+      "matt_adset_id",
+      "matt_platform",
+    ];
+
+    for (const k of kill) u.searchParams.delete(k);
+
+    for (const [k] of Array.from(u.searchParams.entries())) {
+      if (k.toLowerCase().startsWith("matt_")) u.searchParams.delete(k);
+    }
+
+    u.hash = "";
+    return u.toString();
+  } catch {
+    return null;
+  }
+}
+
+function mlCandidateUrls(externalId: string) {
+  const parsed = parseMlExternalId(externalId);
+  if (!parsed) return [];
+
+  const { prefix, digits, raw } = parsed;
+  const urls: string[] = [];
+
+  if (prefix === "MLB") {
+    // mais confiáveis primeiro
+    urls.push(`https://produto.mercadolivre.com.br/MLB-${digits}`);
+    urls.push(`https://www.mercadolivre.com.br/MLB-${digits}`);
+    urls.push(`https://www.mercadolivre.com.br/p/${raw}`);
+  } else {
+    urls.push(`https://www.mercadolivre.com.br/up/${raw}`);
+    urls.push(`https://www.mercadolivre.com.br/p/${raw}`);
   }
 
-  if (isHardGate(html, finalUrl) && !looksLikeRealMlPage(html)) {
-    log(
-      `Cookie validation HARD-GATE title=${title ?? "n/a"} finalUrl=${finalUrl}`,
-    );
-    throw new Error(
-      "ML cookie is invalid or expired (hard gate detected on test page)",
-    );
-  }
+  return urls;
+}
 
-  log(`Cookie validation OK title=${title ?? "n/a"} finalUrl=${finalUrl}`);
+function sha1(s: string) {
+  return crypto.createHash("sha1").update(s).digest("hex");
 }
 
 async function fetchWithRetryHtml(
@@ -313,12 +318,15 @@ async function fetchWithRetryHtml(
   job: JobCounters,
   maxRetries: number,
   cookie: string,
-  log: (s: string) => void,
+  _log: (s: string) => void,
+  deadlineMs: number,
 ) {
   let attempt = 0;
-  let backoff = 700;
+  let backoff = 400;
 
   while (true) {
+    if (Date.now() > deadlineMs) throw new Error("TIME_BUDGET_EXCEEDED");
+
     await jitter();
 
     const ac = new AbortController();
@@ -334,14 +342,10 @@ async function fetchWithRetryHtml(
       });
     } catch (e: any) {
       clearTimeout(to);
-
-      const msg = String(e?.name || e?.message || e);
-      log(`FETCH error (${msg}) url=${url}`);
-
       if (attempt >= maxRetries) throw e;
 
       job.retries += 1;
-      await sleep(Math.min(backoff + randInt(100, 600), 12000));
+      await sleep(Math.min(backoff + randInt(50, 250), 2500));
       attempt += 1;
       backoff *= 2;
       continue;
@@ -351,24 +355,22 @@ async function fetchWithRetryHtml(
 
     if (res.status === 429) {
       job.http429 += 1;
-      log(`HTTP 429 url=${url}`);
       if (attempt >= maxRetries) return res;
 
       job.retries += 1;
       const retryAfter = res.headers.get("retry-after");
       const waitMs = retryAfter ? Number(retryAfter) * 1000 : backoff;
-      await sleep(Math.min(waitMs + randInt(100, 600), 12000));
+      await sleep(Math.min(waitMs + randInt(50, 250), 2500));
       attempt += 1;
       backoff *= 2;
       continue;
     }
 
     if (res.status >= 500 && res.status <= 599) {
-      log(`HTTP ${res.status} (5xx) url=${url}`);
       if (attempt >= maxRetries) return res;
 
       job.retries += 1;
-      await sleep(Math.min(backoff + randInt(100, 600), 12000));
+      await sleep(Math.min(backoff + randInt(50, 250), 2500));
       attempt += 1;
       backoff *= 2;
       continue;
@@ -378,6 +380,7 @@ async function fetchWithRetryHtml(
   }
 }
 
+// ---------- parsing de preço (mantive o seu núcleo) ----------
 function safeJsonParse<T = any>(s: string): T | null {
   try {
     return JSON.parse(s) as T;
@@ -394,18 +397,14 @@ function parseNumberLoose(v: unknown): number | null {
     .replace(/\s+/g, " ")
     .replace(/[R$\u00A0]/g, "")
     .trim();
-
   const hasComma = s.includes(",");
   const hasDot = s.includes(".");
 
   if (hasComma && hasDot) {
     const lastComma = s.lastIndexOf(",");
     const lastDot = s.lastIndexOf(".");
-    if (lastComma > lastDot) {
-      s = s.replace(/\./g, "").replace(",", ".");
-    } else {
-      s = s.replace(/,/g, "");
-    }
+    if (lastComma > lastDot) s = s.replace(/\./g, "").replace(",", ".");
+    else s = s.replace(/,/g, "");
   } else if (hasComma) {
     s = s.replace(/\./g, "").replace(",", ".");
   } else {
@@ -414,7 +413,6 @@ function parseNumberLoose(v: unknown): number | null {
 
   const m = s.match(/-?\d+(\.\d+)?/);
   if (!m) return null;
-
   const n = Number(m[0]);
   return Number.isFinite(n) ? n : null;
 }
@@ -465,7 +463,6 @@ function extractProductOfferFromJsonLd(block: any) {
 
   for (const node of candidates) {
     if (!node || typeof node !== "object") continue;
-
     const type = (node as any)["@type"];
     const isProduct =
       type === "Product" || (Array.isArray(type) && type.includes("Product"));
@@ -633,113 +630,6 @@ function extractPriceFromHtml(html: string) {
   };
 }
 
-function looksLikeLoginOrBot(html: string, finalUrl: string) {
-  const s = html.toLowerCase();
-
-  const botSignals =
-    s.includes("hcaptcha") ||
-    s.includes("g-recaptcha") ||
-    s.includes("recaptcha") ||
-    s.includes("captcha") ||
-    s.includes("challenge") ||
-    s.includes("datadome") ||
-    s.includes("access denied") ||
-    (s.includes("verifique") && (s.includes("robô") || s.includes("robo"))) ||
-    s.includes("não sou um robô");
-
-  const loginSignals =
-    s.includes("iniciar sessão") ||
-    s.includes("inicie sessão") ||
-    s.includes("entrar na sua conta") ||
-    (s.includes("identificação") && s.includes("e-mail")) ||
-    s.includes("ingresar") ||
-    s.includes("iniciar sesion");
-
-  const urlSignals =
-    /\/(authorization|auth|login)\b/i.test(finalUrl) ||
-    /\/(ingreso|entrar)\b/i.test(finalUrl);
-
-  return botSignals || loginSignals || urlSignals;
-}
-
-function isBadUrl(url: string) {
-  const s = (url || "").toLowerCase();
-  return (
-    s.includes("/social/") ||
-    s.includes("/sec/") ||
-    s.includes("forceinapp=true") ||
-    s.includes("matt_tool=") ||
-    s.includes("matt_word=")
-  );
-}
-
-/**
- * Remove tracking “matt_*”, forceInApp, ref etc.
- */
-function cleanMlUrl(input: string): string | null {
-  try {
-    const u = new URL(input);
-
-    const kill = [
-      "forceInApp",
-      "forceinapp",
-      "ref",
-      "matt_tool",
-      "matt_word",
-      "matt_campaign",
-      "matt_source",
-      "matt_custom",
-      "matt_ad_id",
-      "matt_adset_id",
-      "matt_platform",
-    ];
-
-    for (const k of kill) u.searchParams.delete(k);
-
-    for (const [k] of Array.from(u.searchParams.entries())) {
-      if (k.toLowerCase().startsWith("matt_")) u.searchParams.delete(k);
-    }
-
-    u.hash = "";
-    return u.toString();
-  } catch {
-    return null;
-  }
-}
-
-/**
- * ✅ tenta múltiplos formatos que o ML usa
- * - MLB: prioriza MLB-<digits> (produto.mercadolivre.com.br e mercadolivre.com.br)
- * - /p/ pode funcionar (catálogo), mas nem sempre existe
- * - /up/ é útil mais para MLBU
- */
-function mlCandidateUrls(externalId: string) {
-  const parsed = parseMlExternalId(externalId);
-  if (!parsed) return [];
-
-  const { prefix, digits, raw } = parsed;
-
-  const urls: string[] = [];
-
-  if (prefix === "MLB") {
-    urls.push(`https://produto.mercadolivre.com.br/MLB-${digits}`);
-    urls.push(`https://www.mercadolivre.com.br/MLB-${digits}`);
-    urls.push(`https://www.mercadolivre.com.br/p/${raw}`);
-    urls.push(`https://www.mercadolivre.com.br/${raw}`);
-  } else {
-    urls.push(`https://www.mercadolivre.com.br/up/${raw}`);
-    urls.push(`https://www.mercadolivre.com.br/p/${raw}`);
-    urls.push(`https://produto.mercadolivre.com.br/${raw}-${digits}`);
-    urls.push(`https://www.mercadolivre.com.br/${raw}`);
-  }
-
-  return urls;
-}
-
-function sha1(s: string) {
-  return crypto.createHash("sha1").update(s).digest("hex");
-}
-
 function hasStrongPrice(found: ReturnType<typeof extractPriceFromHtml>) {
   return (
     found.price !== null &&
@@ -751,8 +641,46 @@ function hasStrongPrice(found: ReturnType<typeof extractPriceFromHtml>) {
   );
 }
 
+async function validateCookie(cookie: string) {
+  await jitter();
+  const res = await fetch(COOKIE_TEST_URL, {
+    method: "GET",
+    headers: buildBrowserHeaders(cookie),
+    redirect: "follow",
+  });
+
+  const html = await res.text();
+  const title = shortTitle(html) ?? "n/a";
+  const anyRes = res as any;
+  const finalUrl =
+    typeof anyRes.url === "string" && anyRes.url ? anyRes.url : COOKIE_TEST_URL;
+
+  if (!res.ok) {
+    throw new Error(`Cookie validation HTTP ${res.status} title=${title}`);
+  }
+
+  if (looksLikeLoginOrBot(html, finalUrl) && !html.includes("__NEXT_DATA__")) {
+    throw new Error(
+      "ML cookie invalid/expired (bot/login detected on test page)",
+    );
+  }
+}
+
+function errorMessage(e: unknown): string {
+  if (!e) return "Unknown error";
+  if (e instanceof Error) return e.message || "Error";
+  if (typeof e === "string") return e;
+  try {
+    return JSON.stringify(e);
+  } catch {
+    return String(e);
+  }
+}
+
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   const t0 = Date.now();
+  const deadlineMs = t0 + MAX_RUN_MS;
+
   const logs: string[] = [];
   const log = (s: string) => {
     const line = `[ml-prices] ${new Date().toISOString()} ${s}`;
@@ -760,39 +688,65 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     console.log(line);
   };
 
-  try {
-    const got = readCronSecret(req);
-    if (!got || got !== CRON_SECRET) {
-      return res.status(401).json({ ok: false, error: "Unauthorized" });
-    }
+  // ✅ FIX DO "never": use generic any no client
+  const supabase = createClient<any>(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, {
+    auth: { persistSession: false },
+  });
 
+  let jobRunId: number | null = null;
+  let lastErrorSample: string | null = null;
+
+  const job: JobCounters = {
+    scanned: 0,
+    updated: 0,
+    failed: 0,
+    http429: 0,
+    retries: 0,
+    unavailableDeactivated: 0,
+    missingSecUrlSkipped: 0,
+    invalidExternalIdSkipped: 0,
+    cookieMissingOrExpired: 0,
+    priceNotFound: 0,
+    timedOut: 0,
+  };
+
+  let finalStatus: "success" | "partial" | "timeout" | "error" = "success";
+  let stoppedEarly = false;
+
+  const snapshotDate = utcDateString(new Date());
+
+  const got = readCronSecret(req);
+  if (!got || got !== CRON_SECRET) {
+    return res.status(401).json({ ok: false, error: "Unauthorized" });
+  }
+
+  // offset/limit via querystring
+  const host =
+    readHeader(req, "x-forwarded-host") ||
+    readHeader(req, "host") ||
+    "localhost";
+  const proto =
+    readHeader(req, "x-forwarded-proto") ||
+    (host.includes("localhost") ? "http" : "https");
+  const u = new URL(req.url || "/", `${proto}://${host}`);
+
+  const offset = Math.max(0, Number(u.searchParams.get("offset") || "0") || 0);
+  const limit = Math.max(
+    1,
+    Math.min(
+      50,
+      Number(u.searchParams.get("limit") || String(DEFAULT_LIMIT)) ||
+        DEFAULT_LIMIT,
+    ),
+  );
+
+  try {
     const { cookie, source } = readCookieFromEnvOrFile();
     log(
-      source === "b64"
-        ? `Cookie loaded from ML_COOKIE_B64 (env)`
-        : `Cookie loaded from ML_COOKIE_FILE (${COOKIE_FILE})`,
+      `Cookie source=${source} offset=${offset} limit=${limit} maxMs=${MAX_RUN_MS}`,
     );
 
-    await validateCookie(cookie, log);
-
-    const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, {
-      auth: { persistSession: false },
-    });
-
-    const job: JobCounters = {
-      scanned: 0,
-      updated: 0,
-      failed: 0,
-      http429: 0,
-      retries: 0,
-      unavailableDeactivated: 0,
-      missingSecUrlSkipped: 0,
-      invalidExternalIdSkipped: 0,
-      cookieMissingOrExpired: 0,
-      priceNotFound: 0,
-    };
-
-    const snapshotDate = utcDateString(new Date());
+    await validateCookie(cookie);
 
     const { data: runRow, error: runErr } = await supabase
       .from("price_job_runs")
@@ -802,9 +756,19 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         started_at: new Date().toISOString(),
         stats: {
           snapshotDate,
-          batchSize: BATCH_SIZE,
+          offset, // ✅ ADD
+          batchSize: limit,
           concurrency: MAX_CONCURRENCY,
-          mode: source === "b64" ? "html-cookie-b64" : "html-cookie-file",
+          scanned: job.scanned,
+          updated: job.updated,
+          failed: job.failed,
+          cookieMissingOrExpired: job.cookieMissingOrExpired,
+          priceNotFound: job.priceNotFound,
+          http429: job.http429,
+          retries: job.retries,
+          durationMs,
+          stoppedEarly,
+          maxRunMs: MAX_RUN_MS,
         },
       })
       .select("id")
@@ -818,335 +782,317 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       });
     }
 
-    const jobRunId = runRow.id;
-    let lastErrorSample: string | null = null;
+    jobRunId = runRow.id;
 
-    // (mantido; hoje não é usado no fluxo)
-    const { data: imports, error: impErr } = await supabase
-      .from("ml_link_import")
-      .select("product_id, sec_url");
-    if (impErr)
-      throw new Error(`DB read ml_link_import error: ${impErr.message}`);
+    const { data: offers, error } = await supabase
+      .from("store_offers")
+      .select("id, product_id, platform, external_id, url, is_active")
+      .eq("platform", PLATFORM_LABEL)
+      .eq("is_active", true)
+      .order("id", { ascending: true })
+      .range(offset, offset + limit - 1);
 
-    const secByProduct = new Map<string, string>();
-    for (const row of (imports ?? []) as ImportRow[]) {
-      if (row.product_id && row.sec_url)
-        secByProduct.set(row.product_id, row.sec_url);
-    }
+    if (error) throw new Error(`DB read store_offers error: ${error.message}`);
 
-    let offset = 0;
-    let shouldStopEarly = false;
+    const page = (offers ?? []) as StoreOffer[];
+    const filtered = page.filter((o) => {
+      const ok = isValidMLB(o.external_id);
+      if (!ok) job.invalidExternalIdSkipped += 1;
+      return ok;
+    });
 
-    while (true) {
-      const { data: offers, error } = await supabase
-        .from("store_offers")
-        .select("id, product_id, platform, external_id, url, is_active")
-        .eq("platform", PLATFORM_LABEL)
-        .eq("is_active", true)
-        .order("id", { ascending: true })
-        .range(offset, offset + BATCH_SIZE - 1);
+    log(`Page offers=${page.length} filtered=${filtered.length}`);
 
-      if (error)
-        throw new Error(`DB read store_offers error: ${error.message}`);
-      if (!offers || offers.length === 0) break;
+    let gateCount = 0;
 
-      const filtered = (offers as StoreOffer[]).filter((o) => {
-        const ok = isValidMLB(o.external_id);
-        if (!ok) job.invalidExternalIdSkipped += 1;
-        return ok;
-      });
+    const { errors: poolErrors } = await runPool(
+      filtered,
+      MAX_CONCURRENCY,
+      async (offer) => {
+        // ✅ conta scanned por offer processado (independente do resultado)
+        job.scanned += 1;
 
-      job.scanned += filtered.length;
-      log(
-        `Batch offset=${offset} offers=${offers.length} filtered=${filtered.length}`,
-      );
+        if (Date.now() > deadlineMs) {
+          stoppedEarly = true;
+          job.timedOut += 1;
+          throw new Error("TIME_BUDGET_EXCEEDED");
+        }
 
-      const { errors: poolErrors } = await runPool(
-        filtered,
-        MAX_CONCURRENCY,
-        async (offer) => {
-          if (shouldStopEarly) return;
+        const externalId = offer.external_id!;
+        const parsed = parseMlExternalId(externalId);
+        if (!parsed) return;
 
-          const externalId = offer.external_id!;
-          const parsed = parseMlExternalId(externalId);
-          if (!parsed) return;
+        const label = parsed.raw;
 
-          const label = parsed.raw;
+        const candidates: string[] = [];
 
-          const urlRaw = offer.url?.trim() || null;
-          const urlClean = urlRaw ? cleanMlUrl(urlRaw) : null;
-
-          const candidates: string[] = [];
-          if (urlRaw) candidates.push(urlRaw);
+        const urlRaw = offer.url?.trim() || null;
+        if (urlRaw && !isSecUrl(urlRaw)) {
+          candidates.push(urlRaw);
+          const urlClean = cleanMlUrl(urlRaw);
           if (urlClean && urlClean !== urlRaw) candidates.push(urlClean);
+        }
 
-          candidates.push(...mlCandidateUrls(label));
+        candidates.push(...mlCandidateUrls(label));
 
-          const seen = new Set<string>();
-          const candidateUrls = candidates.filter((u) => {
-            if (!u) return false;
-            const key = u.trim();
-            if (!key) return false;
-            if (seen.has(key)) return false;
-            seen.add(key);
-            return true;
-          });
+        const seen = new Set<string>();
+        const candidateUrls = candidates.filter((x) => {
+          const k = (x || "").trim();
+          if (!k) return false;
+          if (seen.has(k)) return false;
+          seen.add(k);
+          return true;
+        });
 
-          log(
-            `Candidates id=${offer.id} ext=${label} count=${candidateUrls.length}`,
-          );
+        let bestHtml: string | null = null;
+        let bestFinalUrl: string | null = null;
+        let bestFetchUrl: string | null = null;
+        let bestFound: ReturnType<typeof extractPriceFromHtml> | null = null;
 
-          let bestHtml: string | null = null;
-          let bestFinalUrl: string | null = null;
-          let bestFetchUrl: string | null = null;
-          let bestFound: ReturnType<typeof extractPriceFromHtml> | null = null;
-
-          for (const fetchUrl of candidateUrls) {
-            if (isBadUrl(fetchUrl)) {
-              log(`Trying tracked url ext=${label} url=${fetchUrl}`);
-            }
-
-            const pageRes = await fetchWithRetryHtml(
-              fetchUrl,
-              job,
-              MAX_RETRIES,
-              cookie,
-              log,
-            );
-
-            const anyRes = pageRes as any;
-            const finalUrl =
-              typeof anyRes.url === "string" && anyRes.url
-                ? anyRes.url
-                : fetchUrl;
-
-            if (!pageRes.ok) continue;
-
-            const html = await pageRes.text();
-
-            const title = shortTitle(html);
-            const isSocialProfile =
-              /\/social\//i.test(finalUrl) ||
-              /perfil social/i.test(title ?? "") ||
-              /maaiquels/i.test(title ?? "");
-
-            const extracted = extractPriceFromHtml(html);
-
-            if (
-              !hasStrongPrice(extracted) &&
-              looksLikeLoginOrBot(html, finalUrl)
-            ) {
-              if (isSocialProfile) {
-                log(
-                  `Ignoring social-profile gate ext=${label} title=${title ?? "n/a"} url=${finalUrl}`,
-                );
-                continue;
-              }
-
-              job.cookieMissingOrExpired += 1;
-
-              const msg = `GATE detected ext=${label} title=${title ?? "n/a"} url=${finalUrl}`;
-              if (!lastErrorSample) lastErrorSample = msg.slice(0, 500);
-              log(msg);
-
-              if (job.cookieMissingOrExpired >= BOT_FAILFAST_THRESHOLD) {
-                shouldStopEarly = true;
-                log(
-                  `Failfast: gateCount=${job.cookieMissingOrExpired} threshold=${BOT_FAILFAST_THRESHOLD}`,
-                );
-                return;
-              }
-              continue;
-            }
-
-            if (extracted.evidence === "regex_brl") continue;
-
-            if (extracted.price !== null && extracted.price > 0) {
-              bestHtml = html;
-              bestFinalUrl = finalUrl;
-              bestFetchUrl = fetchUrl;
-              bestFound = extracted;
-
-              if (hasStrongPrice(extracted)) break;
-            }
+        for (const fetchUrl of candidateUrls) {
+          if (Date.now() > deadlineMs) {
+            stoppedEarly = true;
+            job.timedOut += 1;
+            throw new Error("TIME_BUDGET_EXCEEDED");
           }
 
-          if (!bestHtml || !bestFound || !bestFinalUrl || !bestFetchUrl) {
-            job.priceNotFound += 1;
-            const msg = `Price not found in any ML path ext=${label} offerId=${offer.id}`;
+          const pageRes = await fetchWithRetryHtml(
+            fetchUrl,
+            job,
+            MAX_RETRIES,
+            cookie,
+            log,
+            deadlineMs,
+          );
+
+          const anyRes = pageRes as any;
+          const finalUrl =
+            typeof anyRes.url === "string" && anyRes.url
+              ? anyRes.url
+              : fetchUrl;
+
+          if (!pageRes.ok) continue;
+
+          const html = await pageRes.text();
+          const title = shortTitle(html);
+
+          const extracted = extractPriceFromHtml(html);
+
+          if (
+            !hasStrongPrice(extracted) &&
+            looksLikeLoginOrBot(html, finalUrl)
+          ) {
+            job.cookieMissingOrExpired += 1;
+            gateCount += 1;
+
+            const msg = `GATE ext=${label} title=${title ?? "n/a"} url=${finalUrl}`;
             if (!lastErrorSample) lastErrorSample = msg.slice(0, 500);
             log(msg);
-            return;
+
+            if (gateCount >= BOT_FAILFAST_THRESHOLD) {
+              stoppedEarly = true;
+              throw new Error("GATE_FAILFAST");
+            }
+            continue;
           }
 
-          const now = new Date();
-          const nowIso = now.toISOString();
-          const verifiedDate = utcDateOnly(now);
-          const currency_id = bestFound.currency ?? "BRL";
+          if (extracted.evidence === "regex_brl") continue;
 
-          const raw = {
-            source: "html",
-            evidence: bestFound.evidence,
-            evidence_detail: bestFound.evidence_detail,
-            fetchUrl: bestFetchUrl,
-            finalUrl: bestFinalUrl,
-            title: shortTitle(bestHtml),
-            body_sha1: sha1(bestHtml),
-            extracted_at: nowIso,
-            mode: source === "b64" ? "cookie_b64" : "cookie_file",
-          };
-
-          const { error: upErr } = await supabase
-            .from("offer_last_price")
-            .upsert(
-              {
-                offer_id: label, // TEXT PK
-                price: bestFound.price!,
-                original_price: bestFound.original,
-                currency_id,
-                is_available: true,
-                verified_at: nowIso,
-                verified_date: verifiedDate,
-                updated_at: nowIso,
-                last_checked_at: nowIso,
-                raw,
-              },
-              { onConflict: "offer_id" },
-            );
-
-          if (upErr) {
-            job.failed += 1;
-            throw new Error(
-              `Upsert offer_last_price failed ext=${label}: ${upErr.message}`,
-            );
+          if (extracted.price !== null && extracted.price > 0) {
+            bestHtml = html;
+            bestFinalUrl = finalUrl;
+            bestFetchUrl = fetchUrl;
+            bestFound = extracted;
+            if (hasStrongPrice(extracted)) break;
           }
-
-          const priceCents = Math.round(bestFound.price! * 100);
-
-          const { error: soErr } = await supabase
-            .from("store_offers")
-            .update({
-              current_price_cents: priceCents,
-              current_price_updated_at: nowIso,
-              url: bestFinalUrl, // canoniza
-            })
-            .eq("id", offer.id);
-
-          if (soErr) {
-            job.failed += 1;
-            throw new Error(
-              `Update store_offers failed ext=${label}: ${soErr.message}`,
-            );
-          }
-
-          const { error: prodErr } = await supabase
-            .from("products")
-            .update({
-              mercadolivre_price: bestFound.price!,
-              updated_at: nowIso,
-            })
-            .eq("id", offer.product_id);
-
-          if (prodErr) {
-            job.failed += 1;
-            throw new Error(
-              `Update products.mercadolivre_price failed ext=${label}: ${prodErr.message}`,
-            );
-          }
-
-          job.updated += 1;
-          log(
-            `OK ext=${label} price=${bestFound.price} via=${bestFetchUrl} final=${bestFinalUrl} currency=${currency_id}`,
-          );
-        },
-      );
-
-      if (poolErrors.length > 0) {
-        job.failed += poolErrors.length;
-        if (!lastErrorSample) {
-          lastErrorSample = String(
-            poolErrors[0] instanceof Error
-              ? poolErrors[0].message
-              : poolErrors[0],
-          ).slice(0, 500);
         }
+
+        if (!bestHtml || !bestFound || !bestFinalUrl || !bestFetchUrl) {
+          job.priceNotFound += 1;
+          const msg = `Price not found ext=${label} offerId=${offer.id}`;
+          if (!lastErrorSample) lastErrorSample = msg.slice(0, 500);
+          log(msg);
+          return;
+        }
+
+        const now = new Date();
+        const nowIso = now.toISOString();
+        const verifiedDate = utcDateOnly(now);
+        const currency_id = bestFound.currency ?? "BRL";
+
+        const raw = {
+          source: "html",
+          evidence: bestFound.evidence,
+          evidence_detail: bestFound.evidence_detail,
+          fetchUrl: bestFetchUrl,
+          finalUrl: bestFinalUrl,
+          title: shortTitle(bestHtml),
+          body_sha1: sha1(bestHtml),
+          extracted_at: nowIso,
+        };
+
+        const { error: upErr } = await supabase.from("offer_last_price").upsert(
+          {
+            offer_id: label,
+            price: bestFound.price!,
+            original_price: bestFound.original,
+            currency_id,
+            is_available: true,
+            verified_at: nowIso,
+            verified_date: verifiedDate,
+            updated_at: nowIso,
+            last_checked_at: nowIso,
+            raw,
+          },
+          { onConflict: "offer_id" },
+        );
+
+        if (upErr) {
+          job.failed += 1;
+          throw new Error(
+            `Upsert offer_last_price failed ext=${label}: ${upErr.message}`,
+          );
+        }
+
+        const priceCents = Math.round(bestFound.price! * 100);
+
+        const { error: soErr } = await supabase
+          .from("store_offers")
+          .update({
+            current_price_cents: priceCents,
+            current_price_updated_at: nowIso,
+            url: bestFinalUrl,
+          })
+          .eq("id", offer.id);
+
+        if (soErr) {
+          job.failed += 1;
+          throw new Error(
+            `Update store_offers failed ext=${label}: ${soErr.message}`,
+          );
+        }
+
+        const { error: prodErr } = await supabase
+          .from("products")
+          .update({
+            mercadolivre_price: bestFound.price!,
+            updated_at: nowIso,
+          })
+          .eq("id", offer.product_id);
+
+        if (prodErr) {
+          job.failed += 1;
+          throw new Error(
+            `Update products.mercadolivre_price failed ext=${label}: ${prodErr.message}`,
+          );
+        }
+
+        job.updated += 1;
+
+        log(
+          `OK ext=${label} price=${bestFound.price} final=${bestFinalUrl} currency=${currency_id}`,
+        );
+      },
+    );
+
+    if (poolErrors.length > 0) {
+      const firstMsg = errorMessage(poolErrors[0]);
+      if (!lastErrorSample) lastErrorSample = firstMsg.slice(0, 500);
+
+      if (firstMsg.includes("TIME_BUDGET_EXCEEDED")) {
+        finalStatus = "timeout";
+      } else {
+        finalStatus = "partial";
       }
 
-      offset += BATCH_SIZE;
-      if (shouldStopEarly) break;
-      if (offers.length < BATCH_SIZE) break;
+      // ✅ conta failed só para erros "reais", não timeout/gate failfast
+      for (const e of poolErrors) {
+        const msg = errorMessage(e);
+        if (msg.includes("TIME_BUDGET_EXCEEDED")) continue;
+        if (msg.includes("GATE_FAILFAST")) continue;
+        // se chegou aqui, é falha de processamento
+        job.failed += 1;
+      }
     }
 
     const durationMs = Date.now() - t0;
 
     const hadIncidents =
       job.failed > 0 ||
-      job.unavailableDeactivated > 0 ||
-      job.missingSecUrlSkipped > 0 ||
-      job.invalidExternalIdSkipped > 0 ||
       job.cookieMissingOrExpired > 0 ||
-      job.priceNotFound > 0;
+      job.priceNotFound > 0 ||
+      stoppedEarly ||
+      finalStatus === "timeout";
 
-    const finalStatus = !hadIncidents ? "success" : "partial";
+    if (!hadIncidents) finalStatus = "success";
+    else if (finalStatus !== "timeout") finalStatus = "partial";
 
-    const { error: finErr } = await supabase
-      .from("price_job_runs")
-      .update({
-        finished_at: new Date().toISOString(),
-        status: finalStatus,
-        stats: {
-          snapshotDate,
-          batchSize: BATCH_SIZE,
-          concurrency: MAX_CONCURRENCY,
-          scanned: job.scanned,
-          updated: job.updated,
-          failed: job.failed,
-          unavailableDeactivated: job.unavailableDeactivated,
-          missingSecUrlSkipped: job.missingSecUrlSkipped,
-          invalidExternalIdSkipped: job.invalidExternalIdSkipped,
-          cookieMissingOrExpired: job.cookieMissingOrExpired,
-          priceNotFound: job.priceNotFound,
-          http429: job.http429,
-          retries: job.retries,
-          durationMs,
-          mode: source === "b64" ? "html-cookie-b64" : "html-cookie-file",
-          stoppedEarly: shouldStopEarly,
-        },
-        error: lastErrorSample,
-      })
-      .eq("id", jobRunId);
-
-    if (finErr) {
-      return res.status(500).json({
-        ok: false,
-        error: "Failed to finish job run",
-        details: finErr.message,
-      });
-    }
+    const nextOffset = offset + page.length;
+    const done = page.length < limit;
 
     return res.status(200).json({
       ok: true,
       status: finalStatus,
+      offset,
+      limit,
+      nextOffset,
+      done,
       scanned: job.scanned,
       updated: job.updated,
       failed: job.failed,
       http429: job.http429,
       retries: job.retries,
-      missingSecUrlSkipped: job.missingSecUrlSkipped,
-      invalidExternalIdSkipped: job.invalidExternalIdSkipped,
       cookieMissingOrExpired: job.cookieMissingOrExpired,
       priceNotFound: job.priceNotFound,
       durationMs,
+      stoppedEarly,
       errorSample: lastErrorSample,
-      mode: source === "b64" ? "html-cookie-b64" : "html-cookie-file",
-      stoppedEarly: shouldStopEarly,
-      logs: logs.slice(-160),
+      logs: logs.slice(-120),
     });
   } catch (e: any) {
     console.error(e);
+    const msg = errorMessage(e);
+    finalStatus = msg.includes("TIME_BUDGET_EXCEEDED") ? "timeout" : "error";
+    if (!lastErrorSample) lastErrorSample = msg.slice(0, 500);
+
     return res.status(500).json({
       ok: false,
-      error: e?.message || "Unknown error",
+      status: finalStatus,
+      error: msg,
     });
+  } finally {
+    // finaliza o job run sempre que a função conseguir chegar aqui
+    try {
+      if (jobRunId) {
+        const durationMs = Date.now() - t0;
+
+        await supabase
+          .from("price_job_runs")
+          .update({
+            finished_at: new Date().toISOString(),
+            status: finalStatus,
+            stats: {
+              snapshotDate,
+              batchSize: limit,
+              concurrency: MAX_CONCURRENCY,
+              scanned: job.scanned,
+              updated: job.updated,
+              failed: job.failed,
+              cookieMissingOrExpired: job.cookieMissingOrExpired,
+              priceNotFound: job.priceNotFound,
+              http429: job.http429,
+              retries: job.retries,
+              durationMs,
+              stoppedEarly,
+              maxRunMs: MAX_RUN_MS,
+              offset,
+            },
+            error: lastErrorSample,
+          })
+          .eq("id", jobRunId);
+      }
+    } catch (err) {
+      console.error("[ml-prices] finalize job_run failed", err);
+    }
   }
 }

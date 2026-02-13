@@ -19,28 +19,22 @@ function parsePrice(label: string) {
   const raw = (label || "").trim()
   if (!raw) return NaN
 
-  // Mantém apenas dígitos, "." e ","
   const cleaned = raw.replace(/[^\d.,]/g, "")
   if (!cleaned) return NaN
 
   const hasDot = cleaned.includes(".")
   const hasComma = cleaned.includes(",")
 
-  // Caso "1.234,56" (pt-BR) -> remove milhar, troca decimal
   if (hasDot && hasComma) {
     const n = Number(cleaned.replace(/\./g, "").replace(",", "."))
     return Number.isFinite(n) ? n : NaN
   }
 
-  // Caso "533,99" -> decimal pt-BR
   if (hasComma && !hasDot) {
     const n = Number(cleaned.replace(",", "."))
     return Number.isFinite(n) ? n : NaN
   }
 
-  // Caso com "." apenas:
-  // - "533.99" => decimal
-  // - "1.234"  => milhar (remove pontos)
   if (hasDot && !hasComma) {
     if (/\.\d{2}$/.test(cleaned)) {
       const n = Number(cleaned)
@@ -77,7 +71,6 @@ type Offer = {
   priority: number
 }
 
-// ---- helpers para evitar double-wrap /api/go ----
 function isSafeHttpUrl(raw: string) {
   try {
     const u = new URL(raw)
@@ -87,13 +80,6 @@ function isSafeHttpUrl(raw: string) {
   }
 }
 
-/**
- * Se receber algo como:
- *  - /api/go?url=https%3A%2F%2Famzn.to%2Fxxx&...
- *  - https://seusite.vercel.app/api/go?url=https%3A...
- * devolve a URL externa (https://...).
- * Tenta no máximo 2 "unwraps" para evitar loop.
- */
 function unwrapNestedGoUrl(raw: string) {
   let current = (raw || "").trim()
 
@@ -142,12 +128,6 @@ function getOrCreateSessionId() {
   return sid
 }
 
-/**
- * Escolhe o melhor CTA com base nos preços manuais já cadastrados no admin:
- * products.{shopee_price, mercadolivre_price, amazon_price} + links correspondentes.
- * - menor preço ganha
- * - desempate por prioridade (Amazon > Mercado Livre > Shopee)
- */
 function pickBestManualOffer(product: any): { store: Offer["store"]; price: number; url: string } | null {
   if (!product) return null
 
@@ -178,11 +158,10 @@ function toAbsUrl(pathOrUrl: string) {
   return `https://achadinhoslm.com.br${v.startsWith("/") ? "" : "/"}${v}`
 }
 
-// ✅ detectores para decidir target (desktop _blank vs mobile/in-app)
 function isInAppBrowser() {
   if (typeof navigator === "undefined") return false
   const ua = navigator.userAgent || ""
-  return /FBAN|FBAV|Instagram|Line|TikTok|Pinterest|Snapchat|WhatsApp/i.test(ua)
+  return /FBAN|FBAV|Instagram|Line|TikTok|BytedanceWebview|Pinterest|Snapchat|WhatsApp/i.test(ua)
 }
 
 function isMobileLike() {
@@ -197,12 +176,39 @@ function shouldOpenBlankDesktop() {
   return true
 }
 
+/**
+ * ✅ Copia utm_* + clids (fbclid/gclid/ttclid) da URL atual para o /api/go
+ * Isso é o que vai te permitir diferenciar TikTok/FB/IG mesmo quando o Referer não vem completo.
+ */
+function appendTrackingParams(target: URL, locationSearch: string) {
+  try {
+    const sp = new URLSearchParams(locationSearch)
+
+    const keys = [
+      "utm_source",
+      "utm_medium",
+      "utm_campaign",
+      "utm_term",
+      "utm_content",
+      "fbclid",
+      "gclid",
+      "ttclid",
+    ]
+
+    for (const k of keys) {
+      const v = sp.get(k)
+      if (v) target.searchParams.set(k, v)
+    }
+  } catch {
+    // ignore
+  }
+}
+
 export default function ProductPage() {
   const { slug } = useParams<{ slug: string }>()
   const navigate = useNavigate()
   const location = useLocation()
 
-  // ✅ SEMEAR traffic/utm assim que entrar no produto (e quando a query mudar)
   useEffect(() => {
     seedTrafficCtxFromUrl()
   }, [location.search])
@@ -210,9 +216,7 @@ export default function ProductPage() {
   const { data: product, isLoading, error } = useProduct(slug || "")
   const [showOtherStores, setShowOtherStores] = useState(false)
 
-  // ✅ Hook sempre chamado (ok: enabled controla query)
   const metricsQuery = useProductMetrics(product?.id)
-
   const hasReview = !!product?.review_url
 
   const bestOffer = useMemo(() => {
@@ -235,12 +239,10 @@ export default function ProductPage() {
 
   const hasAnyOffers = !!bestOffer || secondaryOffers.length > 0
 
-  // ✅ Regras “Em alta”
   const views7d = metricsQuery.data?.views7d ?? 0
   const efficiency7d = metricsQuery.data?.efficiency7d ?? 0
   const showTrending = !!product?.id && views7d >= 200 && efficiency7d >= 5
 
-  // ✅ Preço final (mover pra memo pra não depender de hook depois)
   const finalPrice = useMemo(() => {
     if (!product) return NaN
     const bestPrice = typeof bestOffer?.price === "number" ? bestOffer.price : null
@@ -262,47 +264,50 @@ export default function ProductPage() {
     else navigate(-1)
   }
 
+  /**
+   * ✅ NOVO: /api/go por SLUG (server resolve offer)
+   * - mantém store explícito (pra escolher a plataforma)
+   * - passa session_id
+   * - passa UTMs/clids atuais (inclui ttclid)
+   */
   const buildGoUrl = (offer: Offer) => {
     if (!product) return "#"
 
+    // sanity (não usamos offer.url aqui, mas ainda dá pra evitar CTA sem link)
     const finalUrl = unwrapNestedGoUrl(offer.url) || offer.url
-    if (!isSafeHttpUrl(finalUrl)) {
-      console.error("[buildGoUrl] URL inválida para outbound:", { offerUrl: offer.url, finalUrl })
+    if (offer.url && !finalUrl) return "#"
+    if (finalUrl && !finalUrl.startsWith("/api/go") && !isSafeHttpUrl(finalUrl)) {
+      console.error("[buildGoUrl] URL inválida cadastrada no produto:", { offerUrl: offer.url, finalUrl })
       return "#"
     }
 
     const sid = getOrCreateSessionId()
-    const params = new URLSearchParams({
-      url: finalUrl,
-      product_id: product.id,
-      store: offer.store,
-      session_id: sid,
-    })
 
-    return `/api/go?${params.toString()}`
+    const go = new URL("/api/go", window.location.origin)
+    go.searchParams.set("store", offer.store)
+    go.searchParams.set("slug", product.slug)
+    go.searchParams.set("session_id", sid)
+
+    // ✅ repassa UTMs / clids (fbclid/gclid/ttclid) da URL atual
+    appendTrackingParams(go, location.search)
+
+    return `${go.pathname}?${go.searchParams.toString()}`
   }
 
   const primaryGoHref = useMemo(() => {
     if (!product || !bestOffer) return ""
+
     const sid = getOrCreateSessionId()
-    const finalUrl = unwrapNestedGoUrl(bestOffer.url) || bestOffer.url
+    const go = new URL("/api/go", window.location.origin)
+    go.searchParams.set("store", bestOffer.store)
+    go.searchParams.set("slug", product.slug)
+    go.searchParams.set("session_id", sid)
 
-    if (!isSafeHttpUrl(finalUrl)) {
-      console.error("[primaryGoHref] URL inválida para outbound:", { offerUrl: bestOffer.url, finalUrl })
-      return "#"
-    }
+    appendTrackingParams(go, location.search)
 
-    const params = new URLSearchParams({
-      url: finalUrl,
-      product_id: product.id,
-      store: bestOffer.store,
-      session_id: sid,
-    })
+    return `${go.pathname}?${go.searchParams.toString()}`
+  }, [product, bestOffer, location.search])
 
-    return `/api/go?${params.toString()}`
-  }, [product, bestOffer])
-
-  // ✅ Product JSON-LD (SEM quebrar regra de hooks)
   const productSchema = useMemo(() => {
     if (!product) return null
 
@@ -334,9 +339,6 @@ export default function ProductPage() {
     }
   }, [product, finalPrice])
 
-  /**
-   * TRACKING VIEW (server-side)
-   */
   useEffect(() => {
     if (!product?.id) return
 
@@ -358,7 +360,6 @@ export default function ProductPage() {
     if (product) trackProductView(product.slug, product.category)
   }, [product])
 
-  // ============== RETURNS (SEM HOOKS ABAIXO DAQUI) ==============
   if (isLoading) {
     return (
       <Layout>
@@ -416,7 +417,6 @@ export default function ProductPage() {
         ogType: "product",
       }}
     >
-      {/* ✅ JSON-LD no HEAD (correto) */}
       {productSchema ? (
         <Helmet>
           <script type="application/ld+json">{JSON.stringify(productSchema)}</script>
@@ -515,10 +515,10 @@ export default function ProductPage() {
                       category={product.category}
                       price={Number.isFinite(finalPrice) ? finalPrice : undefined}
                       href={primaryGoHref}
-                      target={shouldOpenBlankDesktop() ? "_blank" : "_self"}
+                      target={desktopBlank ? "_blank" : "_self"}
                       disabled={primaryGoHref === "#" || !primaryGoHref}
                       isPrimary
-                      showExternalIcon={shouldOpenBlankDesktop()}
+                      showExternalIcon={desktopBlank}
                     />
                   ) : null}
 
@@ -530,7 +530,9 @@ export default function ProductPage() {
                         onClick={() => setShowOtherStores((v) => !v)}
                       >
                         <span>Outras lojas</span>
-                        <span className="text-xs text-muted-foreground">{showOtherStores ? "Ocultar" : `Ver ${secondaryOffers.length}`}</span>
+                        <span className="text-xs text-muted-foreground">
+                          {showOtherStores ? "Ocultar" : `Ver ${secondaryOffers.length}`}
+                        </span>
                       </button>
 
                       {showOtherStores && (
@@ -546,10 +548,10 @@ export default function ProductPage() {
                                 category={product.category}
                                 price={Number.isFinite(finalPrice) ? finalPrice : undefined}
                                 href={href}
-                                target={shouldOpenBlankDesktop() ? "_blank" : "_self"}
+                                target={desktopBlank ? "_blank" : "_self"}
                                 className="min-h-[48px] rounded-2xl text-sm"
                                 disabled={href === "#" || !href}
-                                showExternalIcon={shouldOpenBlankDesktop()}
+                                showExternalIcon={desktopBlank}
                               />
                             )
                           })}
@@ -587,7 +589,8 @@ export default function ProductPage() {
               <div className="bg-muted rounded-xl p-4 flex gap-3 items-start">
                 <AlertCircle className="h-4 w-4 text-muted-foreground flex-shrink-0 mt-0.5" />
                 <p className="text-xs text-muted-foreground leading-relaxed">
-                  Este link é de afiliado. Ao comprar através dele, você nos ajuda a continuar trazendo ofertas incríveis, sem custo adicional.
+                  Este link é de afiliado. Ao comprar através dele, você nos ajuda a continuar trazendo ofertas incríveis,
+                  sem custo adicional.
                 </p>
               </div>
             </div>

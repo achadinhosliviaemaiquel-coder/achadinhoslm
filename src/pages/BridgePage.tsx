@@ -44,10 +44,19 @@ function detectTrafficFromUrlSignals(): "ads" | "organic" {
 
   const looksPaid =
     m === "paid" || m === "cpc" || m === "ads" || m === "paid_social" || m === "social_paid"
-  const looksFbIg = s === "fb" || s === "facebook" || s === "ig" || s === "instagram"
+
+  // inclui TikTok também
+  const looksSocial =
+    s === "fb" ||
+    s === "facebook" ||
+    s === "ig" ||
+    s === "instagram" ||
+    s === "tt" ||
+    s === "tiktok"
+
   const hasClid = Boolean(fbclid || gclid || ttclid)
 
-  if (looksPaid || looksFbIg || hasClid) return "ads"
+  if (looksPaid || (looksSocial && (looksPaid || hasClid)) || hasClid) return "ads"
   return "organic"
 }
 
@@ -62,15 +71,12 @@ export default function BridgePage() {
   const validStore = store as Store
   const storeLabel = STORE_LABELS[validStore] || store
 
-  const isValidStore = useMemo(
-    () => ["shopee", "mercadolivre", "amazon"].includes(validStore),
-    [validStore]
-  )
+  const isValidStore = useMemo(() => ["shopee", "mercadolivre", "amazon"].includes(validStore), [validStore])
 
   const clickIdRef = useRef<string | null>(null)
 
   useEffect(() => {
-    // ✅ planta o contexto de tráfego o mais cedo possível
+    // ✅ planta o contexto de tráfego o mais cedo possível (agora inclui TikTok também via clickTracking.ts)
     seedTrafficCtxFromUrl()
 
     if (!product || hasRedirected) return
@@ -80,6 +86,7 @@ export default function BridgePage() {
     const affiliateUrl = product[linkKey] as string | null
     if (!affiliateUrl) return
 
+    // (opcional) mantém, mas o retorno não é usado aqui — ok para side-effect/debug
     detectBrowser()
 
     if (!clickIdRef.current) clickIdRef.current = generateClickId()
@@ -97,6 +104,9 @@ export default function BridgePage() {
 
     // ✅ outbound oficial via /api/go (server-side)
     const go = new URL("/api/go", window.location.origin)
+
+    // preferir o modo offer_id se você já usa no botão de compra
+    // aqui mantemos o modo legacy (url + product_id + store) porque você já tinha assim
     go.searchParams.set("product_id", product.id)
     go.searchParams.set("store", validStore)
 
@@ -238,7 +248,10 @@ export default function BridgePage() {
           <ExternalLink className="ml-2 h-4 w-4" />
         </Button>
 
-        <Link to={`/product/${product.slug}`} className="text-sm text-muted-foreground hover:text-foreground transition-colors">
+        <Link
+          to={`/product/${product.slug}`}
+          className="text-sm text-muted-foreground hover:text-foreground transition-colors"
+        >
           ← Voltar ao produto
         </Link>
       </div>
