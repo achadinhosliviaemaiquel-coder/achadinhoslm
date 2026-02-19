@@ -1,4 +1,4 @@
-// api/cron/ml-prices.ts - VERSÃO FINAL COM API OFICIAL (mantém offer_last_price e job_runs)
+// api/cron/ml-prices.ts - VERSÃO FINAL (API Oficial + chama função do banco)
 import type { VercelRequest, VercelResponse } from "@vercel/node";
 import { createClient } from "@supabase/supabase-js";
 
@@ -9,58 +9,14 @@ const PLATFORM_LABEL = process.env.ML_PLATFORM_LABEL || "mercadolivre";
 
 const MAX_RUN_MS = Number(process.env.ML_PRICE_MAX_RUN_MS || "45000");
 
-type StoreOffer = {
-  id: number;
-  product_id: string;
-  platform: string;
-  external_id: string | null;
-  url: string | null;
-  is_active: boolean;
-  current_price_cents?: number | null;
-};
-
-type TokenRow = {
-  id: number;
-  access_token: string;
-  refresh_token: string | null;
-  expires_at: string;
-};
-
-type JobCounters = {
-  scanned: number;
-  updated: number;
-  failed: number;
-  priceNotFound: number;
-  timedOut: number;
-};
-
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   const t0 = Date.now();
-  const deadlineMs = t0 + MAX_RUN_MS;
-
   const logs: string[] = [];
   const log = (s: string) => {
     const line = `[ml-prices-api] ${new Date().toISOString()} ${s}`;
     logs.push(line);
     console.log(line);
   };
-
-  const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, {
-    auth: { persistSession: false },
-  });
-
-  let jobRunId: number | null = null;
-  let lastErrorSample: string | null = null;
-
-  const job: JobCounters = {
-    scanned: 0,
-    updated: 0,
-    failed: 0,
-    priceNotFound: 0,
-    timedOut: 0,
-  };
-
-  let finalStatus: "success" | "partial" | "timeout" | "error" = "success";
 
   try {
     const secret =
@@ -70,13 +26,17 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       return res.status(401).json({ ok: false, error: "Unauthorized" });
     }
 
-    // Pega token
+    const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, {
+      auth: { persistSession: false },
+    });
+
+    // 1. Pega token mais recente
     const { data: tokenRow, error: tokenErr } = await supabase
       .from("ml_oauth_tokens")
       .select("*")
       .order("id", { ascending: false })
       .limit(1)
-      .single<TokenRow>();
+      .single();
 
     if (tokenErr || !tokenRow) {
       throw new Error("Nenhum token encontrado. Rode o callback primeiro.");
@@ -85,7 +45,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     let accessToken = tokenRow.access_token;
     const expiresAt = new Date(tokenRow.expires_at);
 
-    // Refresh automático
+    // 2. Refresh automático se expirado
     if (Date.now() > expiresAt.getTime() && tokenRow.refresh_token) {
       log("🔄 Token expirado → refresh automático");
       const refreshRes = await fetch(
@@ -104,8 +64,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
       const refreshData = await refreshRes.json();
 
-      if (!refreshRes.ok)
-        throw new Error(`Refresh falhou: ${JSON.stringify(refreshData)}`);
+      if (!refreshRes.ok) throw new Error(`Refresh falhou`);
 
       accessToken = refreshData.access_token;
 
@@ -124,10 +83,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       log("✅ Token renovado");
     }
 
-    // Busca ofertas
+    // 3. Busca ofertas ativas
     const { data: offers, error: offersErr } = await supabase
       .from("store_offers")
-      .select("id, product_id, external_id, current_price_cents")
+      .select("id, external_id, product_id")
       .eq("platform", PLATFORM_LABEL)
       .eq("is_active", true);
 
@@ -135,7 +94,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     log(`📦 Encontradas ${offers?.length || 0} ofertas`);
 
-    let updated = 0;
+    const updates: any[] = [];
 
     for (let i = 0; i < offers.length; i += 50) {
       const batch = offers.slice(i, i + 50);
@@ -148,70 +107,40 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         },
       );
 
-      if (!apiRes.ok) {
-        log(`❌ API erro ${apiRes.status}`);
-        continue;
-      }
-
       const items = await apiRes.json();
 
       for (const item of Array.isArray(items) ? items : [items]) {
-        if (!item || item.error || !item.price) {
-          job.priceNotFound++;
-          continue;
-        }
+        if (!item || item.error || !item.price) continue;
 
         const offer = batch.find((o) => o.external_id === item.id);
         if (!offer) continue;
 
-        const priceCents = Math.round(item.price * 100);
-
-        // Atualiza offer_last_price
-        await supabase.from("offer_last_price").upsert(
-          {
-            offer_id: item.id,
-            price: item.price,
-            currency_id: "BRL",
-            is_available: true,
-            verified_at: new Date().toISOString(),
-            verified_date: new Date().toISOString().split("T")[0],
-            updated_at: new Date().toISOString(),
-          },
-          { onConflict: "offer_id" },
-        );
-
-        // Atualiza store_offers
-        await supabase
-          .from("store_offers")
-          .update({
-            current_price_cents: priceCents,
-            current_price_updated_at: new Date().toISOString(),
-            last_scrape_status: "ok",
-            updated_at: new Date().toISOString(),
-          })
-          .eq("id", offer.id);
-
-        // Atualiza products
-        await supabase
-          .from("products")
-          .update({
-            mercadolivre_price: item.price,
-            updated_at: new Date().toISOString(),
-          })
-          .eq("id", offer.product_id);
-
-        updated++;
-        log(`✅ Atualizado ${item.id} → R$ ${item.price}`);
+        updates.push({
+          offer_id: item.id,
+          price: item.price,
+          verified_at: new Date().toISOString(),
+        });
       }
+    }
+
+    // 4. Chama a função do seu banco (apply_offer_price_updates)
+    if (updates.length > 0) {
+      const { data, error } = await supabase.rpc("apply_offer_price_updates", {
+        p_updates: updates,
+      });
+
+      if (error) throw error;
+
+      log(
+        `✅ apply_offer_price_updates executada com ${updates.length} preços`,
+      );
     }
 
     const durationMs = Date.now() - t0;
 
-    log(`🎉 Finalizado! ${updated} preços atualizados`);
-
     return res.status(200).json({
       ok: true,
-      updated,
+      updated: updates.length,
       total: offers.length,
       durationMs,
     });
