@@ -1,4 +1,4 @@
-// api/cron/ml-prices.ts - VERSÃO DEBUG SIMPLES (individual por item)
+// api/cron/ml-prices.ts - VERSÃO ULTRA TOLERANTE (ignora 404 e continua)
 import type { VercelRequest, VercelResponse } from "@vercel/node";
 import { createClient } from "@supabase/supabase-js";
 
@@ -10,7 +10,7 @@ const PLATFORM_LABEL = process.env.ML_PLATFORM_LABEL || "mercadolivre";
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   const logs: string[] = [];
   const log = (s: string) => {
-    const line = `[ml-prices-debug] ${new Date().toISOString()} ${s}`;
+    const line = `[ml-prices] ${new Date().toISOString()} ${s}`;
     logs.push(line);
     console.log(line);
   };
@@ -27,7 +27,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       auth: { persistSession: false },
     });
 
-    log("=== INICIANDO DEBUG ml-prices ===");
+    log("=== INICIANDO ml-prices (versão ultra tolerante) ===");
 
     // Pega token
     const { data: tokenRow } = await supabase
@@ -37,11 +37,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       .limit(1)
       .single();
 
-    if (!tokenRow)
-      throw new Error("Nenhum token encontrado. Rode o callback primeiro.");
+    if (!tokenRow) throw new Error("Nenhum token encontrado");
 
     const accessToken = tokenRow.access_token;
-    log(`Token carregado (expira em ${tokenRow.expires_at})`);
 
     // Busca ofertas
     const { data: offers } = await supabase
@@ -50,7 +48,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       .eq("platform", PLATFORM_LABEL)
       .eq("is_active", true);
 
-    log(`Total de ofertas ativas: ${offers?.length || 0}`);
+    log(`Encontradas ${offers?.length || 0} ofertas ativas`);
 
     let updated = 0;
 
@@ -69,38 +67,34 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       });
 
       if (!apiRes.ok) {
-        log(`API erro ${apiRes.status} para ${mlb}`);
+        log(`API erro ${apiRes.status} para ${mlb} (ignorado)`);
         continue;
       }
 
       const item = await apiRes.json();
 
-      if (item.error) {
-        log(`API retornou erro: ${JSON.stringify(item.error)}`);
-        continue;
-      }
-
-      if (!item.price || item.price <= 0) {
+      if (item.error || !item.price || item.price <= 0) {
         log(`Sem preço válido para ${mlb} (price = ${item.price})`);
         continue;
       }
 
-      // Chama a função do banco
+      const updates = [
+        {
+          offer_id: mlb,
+          price: item.price,
+          verified_at: new Date().toISOString(),
+        },
+      ];
+
       const { error: rpcError } = await supabase.rpc(
         "apply_offer_price_updates",
         {
-          p_updates: [
-            {
-              offer_id: mlb,
-              price: item.price,
-              verified_at: new Date().toISOString(),
-            },
-          ],
+          p_updates: updates,
         },
       );
 
       if (rpcError) {
-        log(`Erro na função apply_offer_price_updates: ${rpcError.message}`);
+        log(`Erro na função: ${rpcError.message}`);
       } else {
         updated++;
         log(`✅ SUCESSO: ${mlb} → R$ ${item.price}`);
@@ -113,7 +107,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       ok: true,
       updated,
       total: offers?.length || 0,
-      logs: logs.slice(-100),
     });
   } catch (e: any) {
     console.error(e);
