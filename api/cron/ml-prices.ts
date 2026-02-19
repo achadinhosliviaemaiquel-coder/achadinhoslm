@@ -1,4 +1,4 @@
-// api/cron/ml-prices.ts - VERSÃO DIAGNÓSTICO (muitos logs para entender o que está acontecendo)
+// api/cron/ml-prices.ts - VERSÃO CORRIGIDA E OTIMIZADA
 import type { VercelRequest, VercelResponse } from "@vercel/node";
 import { createClient } from "@supabase/supabase-js";
 
@@ -7,10 +7,14 @@ const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY!;
 const CRON_SECRET = process.env.CRON_SECRET!;
 const PLATFORM_LABEL = process.env.ML_PLATFORM_LABEL || "mercadolivre";
 
+const MAX_RUN_MS = Number(process.env.ML_PRICE_MAX_RUN_MS || "45000");
+const BATCH_SIZE = 10; // Reduzido para evitar bad_request
+
 export default async function handler(req: VercelRequest, res: VercelResponse) {
+  const t0 = Date.now();
   const logs: string[] = [];
   const log = (s: string) => {
-    const line = `[ml-prices-debug] ${new Date().toISOString()} ${s}`;
+    const line = `[ml-prices] ${new Date().toISOString()} ${s}`;
     logs.push(line);
     console.log(line);
   };
@@ -27,9 +31,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       auth: { persistSession: false },
     });
 
-    log("=== INICIANDO ml-prices DEBUG ===");
+    log("=== INICIANDO ml-prices ===");
 
-    // 1. Token
+    // Pega token
     const { data: tokenRow } = await supabase
       .from("ml_oauth_tokens")
       .select("*")
@@ -37,13 +41,12 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       .limit(1)
       .single();
 
-    if (!tokenRow)
-      throw new Error("Nenhum token encontrado na tabela ml_oauth_tokens");
+    if (!tokenRow) throw new Error("Nenhum token encontrado");
 
     let accessToken = tokenRow.access_token;
-    log(`Token encontrado. Expira em: ${tokenRow.expires_at}`);
+    log(`Token OK (expira em ${tokenRow.expires_at})`);
 
-    // 2. Busca ofertas
+    // Busca ofertas
     const { data: offers } = await supabase
       .from("store_offers")
       .select("id, external_id, product_id")
@@ -52,13 +55,22 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     log(`Encontradas ${offers?.length || 0} ofertas ativas`);
 
+    let updated = 0;
     const updates: any[] = [];
 
-    for (let i = 0; i < (offers?.length || 0); i += 50) {
-      const batch = offers!.slice(i, i + 50);
-      const ids = batch.map((o) => o.external_id).join(",");
+    // Processa em batches pequenos
+    for (let i = 0; i < (offers?.length || 0); i += BATCH_SIZE) {
+      const batch = offers!.slice(i, i + BATCH_SIZE);
 
-      log(`Buscando batch de ${batch.length} itens: ${ids}`);
+      // Filtra apenas MLB válidos
+      const validBatch = batch.filter(
+        (o) => o.external_id && o.external_id.startsWith("MLB"),
+      );
+      if (validBatch.length === 0) continue;
+
+      const ids = validBatch.map((o) => o.external_id).join(",");
+
+      log(`Buscando ${validBatch.length} itens: ${ids}`);
 
       const apiRes = await fetch(
         `https://api.mercadolibre.com/items?ids=${ids}`,
@@ -67,27 +79,21 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         },
       );
 
+      if (!apiRes.ok) {
+        log(`API erro ${apiRes.status}`);
+        continue;
+      }
+
       const items = await apiRes.json();
-      log(`API retornou ${Array.isArray(items) ? items.length : 1} itens`);
 
       for (const item of Array.isArray(items) ? items : [items]) {
-        if (!item || item.error) {
-          log(
-            `Item com erro: ${item?.id || "unknown"} - ${item?.error || "sem dados"}`,
-          );
+        if (!item || item.error || !item.price) {
+          log(`Item sem preço ou erro: ${item?.id || "unknown"}`);
           continue;
         }
 
-        if (!item.price) {
-          log(`Item ${item.id} sem preço`);
-          continue;
-        }
-
-        const offer = batch.find((o) => o.external_id === item.id);
-        if (!offer) {
-          log(`Offer não encontrado para item ${item.id}`);
-          continue;
-        }
+        const offer = validBatch.find((o) => o.external_id === item.id);
+        if (!offer) continue;
 
         updates.push({
           offer_id: item.id,
@@ -95,35 +101,35 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           verified_at: new Date().toISOString(),
         });
 
-        log(`✅ Adicionado update: offer_id=${item.id} price=R$${item.price}`);
+        updated++;
+        log(`✅ Adicionado update: ${item.id} → R$ ${item.price}`);
       }
     }
 
-    log(`Total de updates preparados: ${updates.length}`);
-
+    // Chama função do banco
     if (updates.length > 0) {
-      log("Chamando função apply_offer_price_updates...");
-      const { data, error } = await supabase.rpc("apply_offer_price_updates", {
+      log(`Chamando apply_offer_price_updates com ${updates.length} preços...`);
+      const { error } = await supabase.rpc("apply_offer_price_updates", {
         p_updates: updates,
       });
 
       if (error) {
-        log(`ERRO na função apply_offer_price_updates: ${error.message}`);
+        log(`ERRO na função: ${error.message}`);
         throw error;
       }
-
-      log(
-        `Função apply_offer_price_updates executada com sucesso. Retorno: ${JSON.stringify(data)}`,
-      );
+      log("✅ apply_offer_price_updates executada com sucesso");
     } else {
-      log("NENHUM update preparado - nenhum preço encontrado na API");
+      log("NENHUM preço encontrado na API");
     }
+
+    const durationMs = Date.now() - t0;
 
     return res.status(200).json({
       ok: true,
-      updated: updates.length,
+      updated,
       total: offers?.length || 0,
-      logs: logs.slice(-80),
+      durationMs,
+      logs: logs.slice(-50),
     });
   } catch (e: any) {
     console.error(e);
