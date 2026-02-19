@@ -1,4 +1,4 @@
-// api/cron/ml-prices.ts - VERSÃO FINAL FUNCIONANDO (API Oficial)
+// api/cron/ml-prices.ts - VERSÃO FINAL COM API OFICIAL (batch pequeno)
 import type { VercelRequest, VercelResponse } from "@vercel/node";
 import { createClient } from "@supabase/supabase-js";
 
@@ -6,6 +6,8 @@ const SUPABASE_URL = process.env.SUPABASE_URL!;
 const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY!;
 const CRON_SECRET = process.env.CRON_SECRET!;
 const PLATFORM_LABEL = process.env.ML_PLATFORM_LABEL || "mercadolivre";
+
+const BATCH_SIZE = 5; // Reduzido para evitar bad_request
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   const logs: string[] = [];
@@ -25,7 +27,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       auth: { persistSession: false },
     });
 
-    log("=== INICIANDO ml-prices API Oficial ===");
+    log("=== ml-prices API Oficial INICIADO ===");
 
     // Pega token
     const { data: tokenRow } = await supabase
@@ -38,10 +40,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     if (!tokenRow) throw new Error("Nenhum token encontrado. Rode o callback primeiro.");
 
     let accessToken = tokenRow.access_token;
-    const expiresAt = new Date(tokenRow.expires_at);
 
-    // Refresh automático se expirado
-    if (Date.now() > expiresAt.getTime() && tokenRow.refresh_token) {
+    // Refresh automático
+    if (new Date(tokenRow.expires_at) < new Date() && tokenRow.refresh_token) {
       log("Token expirado → fazendo refresh...");
       const refreshRes = await fetch("https://api.mercadolibre.com/oauth/token", {
         method: "POST",
@@ -68,7 +69,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         })
         .eq("id", tokenRow.id);
 
-      log("✅ Token renovado");
+      log("Token renovado com sucesso");
     }
 
     // Busca ofertas
@@ -82,43 +83,47 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     let updated = 0;
 
-    for (const offer of (offers || [])) {
-      const mlb = offer.external_id?.trim();
-      if (!mlb || (!mlb.startsWith("MLB") && !mlb.startsWith("MLBU"))) continue;
+    for (let i = 0; i < (offers?.length || 0); i += BATCH_SIZE) {
+      const batch = (offers || []).slice(i, i + BATCH_SIZE);
+      const validBatch = batch.filter(o => o.external_id && (o.external_id.startsWith("MLB") || o.external_id.startsWith("MLBU")));
 
-      log(`Buscando preço para ${mlb}...`);
+      if (validBatch.length === 0) continue;
 
-      const apiRes = await fetch(`https://api.mercadolibre.com/items/${mlb}`, {
+      const ids = validBatch.map(o => o.external_id).join(",");
+
+      log(`Buscando batch de ${validBatch.length} itens: ${ids}`);
+
+      const apiRes = await fetch(`https://api.mercadolibre.com/items?ids=${ids}`, {
         headers: { Authorization: `Bearer ${accessToken}` },
       });
 
       if (!apiRes.ok) {
-        log(`API erro ${apiRes.status} para ${mlb}`);
+        log(`API erro ${apiRes.status}`);
         continue;
       }
 
-      const item = await apiRes.json();
+      const items = await apiRes.json();
 
-      if (!item.price || item.price <= 0) {
-        log(`Sem preço válido para ${mlb}`);
-        continue;
-      }
+      for (const item of Array.isArray(items) ? items : [items]) {
+        if (!item || item.error || !item.price || item.price <= 0) continue;
 
-      const updates = [{
-        offer_id: mlb,
-        price: item.price,
-        verified_at: new Date().toISOString(),
-      }];
+        const offer = validBatch.find(o => o.external_id === item.id);
+        if (!offer) continue;
 
-      const { error } = await supabase.rpc("apply_offer_price_updates", {
-        p_updates: updates,
-      });
+        const updates = [{
+          offer_id: item.id,
+          price: item.price,
+          verified_at: new Date().toISOString(),
+        }];
 
-      if (error) {
-        log(`Erro na função: ${error.message}`);
-      } else {
-        updated++;
-        log(`✅ ATUALIZADO: ${mlb} → R$ ${item.price}`);
+        const { error } = await supabase.rpc("apply_offer_price_updates", {
+          p_updates: updates,
+        });
+
+        if (!error) {
+          updated++;
+          log(`✅ ATUALIZADO: ${item.id} → R$ ${item.price}`);
+        }
       }
     }
 
