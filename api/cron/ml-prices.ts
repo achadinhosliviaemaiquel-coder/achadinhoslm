@@ -636,7 +636,11 @@ function extractPriceFromHtml(html: string) {
     }
   }
 
-  // Regex melhorado - evita preço de parcela e "a partir de"
+  // ====================== NOVA LÓGICA MELHORADA ======================
+  // Se encontrou preço bom via meta/jsonld/next_data → usa ele (prioridade máxima)
+  // (já foi tratado acima, mas mantemos a lógica clara)
+
+  // Regex melhorado - evita preço de parcela ("12x de R$ 16,88")
   const moneyRegex =
     /R\$\s*(?:\d{1,3}(?:\.\d{3})*,)?(\d{1,3}(?:\.\d{3})*,\d{2})(?!\s*(?:x|de|por|sem|juros))/gi;
 
@@ -646,11 +650,21 @@ function extractPriceFromHtml(html: string) {
   while ((match = moneyRegex.exec(html)) !== null) {
     const candidate = parseNumberLoose(match[1]);
     if (candidate && candidate > 0) {
-      // Prefere preços maiores (preço à vista costuma ser maior que parcela)
       if (bestPrice === null || candidate > bestPrice) {
         bestPrice = candidate;
       }
     }
+  }
+
+  // Só usa regex como último recurso
+  if (bestPrice !== null) {
+    return {
+      price: bestPrice,
+      original: null,
+      currency: "BRL",
+      evidence: "regex_improved",
+      evidence_detail: "improved_money_regex",
+    };
   }
 
   return {
