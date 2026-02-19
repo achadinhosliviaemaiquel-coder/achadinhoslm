@@ -391,19 +391,28 @@ function safeJsonParse<T = any>(s: string): T | null {
 }
 
 function sanitizeMlPriceCents(args: {
-  computedCents: number; // Math.round(price*100)
-  prevCents?: number | null; // offer.current_price_cents
+  computedCents: number;
+  prevCents?: number | null;
 }): number {
-  const cents = args.computedCents;
+  let cents = args.computedCents;
   const prev = args.prevCents ?? null;
 
-  // Regra 1 (forte): salto absurdo vs preço anterior e é múltiplo de 100 => double-scale.
-  if (prev && prev > 0) {
-    if (cents >= prev * 10 && cents % 100 === 0) return Math.round(cents / 100);
+  // Se o preço for absurdamente grande (provavelmente double-scale)
+  if (cents >= 500_000 && cents % 100 === 0) {
+    cents = Math.round(cents / 100);
   }
 
-  // Regra 2 (fallback): preços gigantes e múltiplos de 100 tendem a ser double-scale.
-  if (cents >= 500_000 && cents % 100 === 0) return Math.round(cents / 100);
+  // Se tiver preço anterior e o novo for ~metade, desconfia
+  if (prev && prev > 0 && cents > 0) {
+    const ratio = cents / prev;
+    if (ratio > 0.45 && ratio < 0.55) {
+      // provavelmente pegou preço de parcela → usa o anterior como referência
+      log(
+        `[WARN] Possible parcel price detected: ${cents / 100} vs previous ${prev / 100}`,
+      );
+      return prev; // mantém o preço anterior
+    }
+  }
 
   return cents;
 }
@@ -627,17 +636,20 @@ function extractPriceFromHtml(html: string) {
     }
   }
 
-  const money = html.match(/R\$\s*([0-9]{1,3}(\.[0-9]{3})*,[0-9]{2})/);
-  if (money?.[1]) {
-    const p = parseNumberLoose(money[1]);
-    if (p !== null) {
-      return {
-        price: p,
-        original: null,
-        currency: "BRL",
-        evidence: "regex_brl" as const,
-        evidence_detail: "regex:R$" as const,
-      };
+  // Regex melhorado - evita preço de parcela e "a partir de"
+  const moneyRegex =
+    /R\$\s*(?:\d{1,3}(?:\.\d{3})*,)?(\d{1,3}(?:\.\d{3})*,\d{2})(?!\s*(?:x|de|por|sem|juros))/gi;
+
+  let match;
+  let bestPrice: number | null = null;
+
+  while ((match = moneyRegex.exec(html)) !== null) {
+    const candidate = parseNumberLoose(match[1]);
+    if (candidate && candidate > 0) {
+      // Prefere preços maiores (preço à vista costuma ser maior que parcela)
+      if (bestPrice === null || candidate > bestPrice) {
+        bestPrice = candidate;
+      }
     }
   }
 
@@ -659,6 +671,22 @@ function hasStrongPrice(found: ReturnType<typeof extractPriceFromHtml>) {
       found.evidence === "__NEXT_DATA__" ||
       found.evidence === "__PRELOADED_STATE__")
   );
+}
+
+// Se encontrou preço bom via meta/jsonld/next_data → usa ele (prioridade máxima)
+if (hasStrongPrice(extracted)) {
+  return extracted;
+}
+
+// Só usa regex como último recurso
+if (bestPrice !== null) {
+  return {
+    price: bestPrice,
+    original: null,
+    currency: "BRL",
+    evidence: "regex_improved",
+    evidence_detail: "improved_money_regex",
+  };
 }
 
 async function validateCookie(cookie: string) {
