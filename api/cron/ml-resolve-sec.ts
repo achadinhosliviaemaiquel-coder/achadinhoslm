@@ -1,4 +1,4 @@
-// api/cron/ml-resolve-sec.ts - VERSÃO SIMPLES E ESTÁVEL (sem cookie)
+// api/cron/ml-resolve-sec.ts - VERSÃO OTIMIZADA PARA LINKS DE AFILIADO
 import "dotenv/config";
 import type { VercelRequest, VercelResponse } from "@vercel/node";
 import { createClient } from "@supabase/supabase-js";
@@ -8,7 +8,7 @@ const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY!;
 const CRON_SECRET = process.env.CRON_SECRET!;
 const PLATFORM_LABEL = process.env.ML_PLATFORM_LABEL || "mercadolivre";
 
-const MAX_ITEMS = Number(process.env.ML_RESOLVE_MAX_ITEMS || "300");
+const MAX_ITEMS = Number(process.env.ML_RESOLVE_MAX_ITEMS || "400");
 
 function readCronSecret(req: VercelRequest): string {
   const h = req.headers["x-cron-secret"] as string | undefined;
@@ -38,16 +38,16 @@ function extractMlExternalId(input?: string | null): string | null {
   return null;
 }
 
-async function resolveFinalUrl(url: string): Promise<string> {
+async function resolveFinalUrl(shortUrl: string): Promise<string> {
   try {
-    const res = await fetch(url, {
+    const res = await fetch(shortUrl, {
       method: "GET",
       redirect: "follow",
       headers: { "User-Agent": "Mozilla/5.0" },
     });
-    return res.url || url;
+    return res.url || shortUrl;
   } catch {
-    return url;
+    return shortUrl;
   }
 }
 
@@ -87,10 +87,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     const targets = (products as ProductRow[]).filter((p) => {
       const url = (p.mercadolivre_link || "").trim();
-      return url && (url.includes("/sec/") || url.includes("/social/"));
+      return url.length > 0;
     });
 
-    log(`scanned=${products?.length ?? 0} targets=${targets.length}`);
+    log(`scanned=${products?.length ?? 0} | targets=${targets.length}`);
 
     let scanned = 0;
     let resolved = 0;
@@ -102,20 +102,16 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       const original = (p.mercadolivre_link || "").trim();
       let finalUrl = await resolveFinalUrl(original);
 
-      if (finalUrl.includes("/social/") || finalUrl.includes("forceInApp=true")) {
-        log(`BAD finalUrl product=${p.id} url=${finalUrl}`);
-        continue;
-      }
-
       const mlb = extractMlExternalId(finalUrl) || extractMlExternalId(p.source_url);
 
       if (!mlb) {
-        log(`MLB not found product=${p.id}`);
+        log(`❌ MLB not found product=${p.id} url=${finalUrl}`);
         continue;
       }
 
       resolved++;
 
+      // Atualiza com o link limpo (final)
       if (finalUrl !== original) {
         await supabase
           .from("products")
@@ -124,6 +120,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         updated++;
       }
 
+      // Salva na store_offers
       await supabase.from("store_offers").upsert({
         product_id: p.id,
         platform: PLATFORM_LABEL,
@@ -133,7 +130,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         updated_at: new Date().toISOString(),
       }, { onConflict: "product_id,platform" });
 
-      log(`OK product=${p.id} mlb=${mlb} url=${finalUrl}`);
+      log(`✅ OK product=${p.id} mlb=${mlb} url=${finalUrl}`);
     }
 
     return res.status(200).json({
