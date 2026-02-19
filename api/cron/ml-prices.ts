@@ -34,6 +34,7 @@ const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY!;
 const CRON_SECRET = process.env.CRON_SECRET!;
 const PLATFORM_LABEL = process.env.ML_PLATFORM_LABEL || "mercadolivre";
 
+// defaults seguros para serverless
 const DEFAULT_LIMIT = Number(process.env.ML_PRICE_BATCH_SIZE || "10");
 const MAX_CONCURRENCY = Number(process.env.ML_PRICE_CONCURRENCY || "1");
 const MAX_RETRIES = Number(process.env.ML_PRICE_MAX_RETRIES || "1");
@@ -41,16 +42,20 @@ const BOT_FAILFAST_THRESHOLD = Number(
   process.env.ML_PRICE_BOT_FAILFAST_THRESHOLD || "3",
 );
 
+// cookie
 const COOKIE_FILE = process.env.ML_COOKIE_FILE || "./ml-cookie.json";
 const COOKIE_B64 = process.env.ML_COOKIE_B64 || "";
 const COOKIE_TEST_URL =
   process.env.ML_COOKIE_TEST_URL ||
   "https://www.mercadolivre.com.br/p/MLB19698479";
 
+// jitter / timeouts
 const JITTER_MIN_MS = Number(process.env.ML_JITTER_MIN_MS || "80");
 const JITTER_MAX_MS = Number(process.env.ML_JITTER_MAX_MS || "220");
 const FETCH_TIMEOUT_MS = Number(process.env.ML_FETCH_TIMEOUT_MS || "8000");
-const MAX_RUN_MS = Number(process.env.ML_PRICE_MAX_RUN_MS || "45000");
+
+// budget de execução (antes da Vercel matar)
+const MAX_RUN_MS = Number(process.env.ML_PRICE_MAX_RUN_MS || "45000"); // 45s
 
 function utcDateString(d = new Date()) {
   const y = d.getUTCFullYear();
@@ -120,6 +125,7 @@ async function runPool<T>(
 ) {
   const errors: unknown[] = [];
   let i = 0;
+
   const runners = new Array(Math.min(concurrency, items.length))
     .fill(null)
     .map(async () => {
@@ -133,6 +139,7 @@ async function runPool<T>(
         }
       }
     });
+
   await Promise.all(runners);
   return { errors };
 }
@@ -154,16 +161,20 @@ function readCookieFromEnvOrFile(): { cookie: string; source: "b64" | "file" } {
     } catch (e: any) {
       throw new Error(`ML_COOKIE_B64 invalid base64/json: ${e?.message || e}`);
     }
+
     let cookie = typeof parsed.cookie === "string" ? parsed.cookie : "";
     if (!cookie && typeof parsed.cookie_base64 === "string") {
       cookie = Buffer.from(parsed.cookie_base64, "base64").toString("utf8");
     }
+
     cookie = normalizeCookieHeader(cookie || "");
     if (!cookie) throw new Error("ML_COOKIE_B64 provided but cookie is empty");
     return { cookie, source: "b64" };
   }
+
   const p = path.resolve(process.cwd(), COOKIE_FILE);
   if (!fs.existsSync(p)) throw new Error(`ML_COOKIE_FILE not found: ${p}`);
+
   const raw = fs.readFileSync(p, "utf8").replace(/^\uFEFF/, "");
   let json: any;
   try {
@@ -171,10 +182,12 @@ function readCookieFromEnvOrFile(): { cookie: string; source: "b64" | "file" } {
   } catch (e: any) {
     throw new Error(`ML_COOKIE_FILE invalid JSON: ${e?.message || e}`);
   }
+
   let cookie = typeof json.cookie === "string" ? json.cookie : "";
   if (!cookie && typeof json.cookie_base64 === "string") {
     cookie = Buffer.from(json.cookie_base64, "base64").toString("utf8");
   }
+
   cookie = normalizeCookieHeader(cookie || "");
   if (!cookie) throw new Error("ML_COOKIE_FILE exists but cookie is empty");
   return { cookie, source: "file" };
@@ -212,6 +225,7 @@ function shortTitle(html: string) {
 
 function looksLikeLoginOrBot(html: string, finalUrl: string) {
   const s = html.toLowerCase();
+
   const botSignals =
     s.includes("hcaptcha") ||
     s.includes("g-recaptcha") ||
@@ -222,6 +236,7 @@ function looksLikeLoginOrBot(html: string, finalUrl: string) {
     s.includes("access denied") ||
     (s.includes("verifique") && (s.includes("robô") || s.includes("robo"))) ||
     s.includes("não sou um robô");
+
   const loginSignals =
     s.includes("iniciar sessão") ||
     s.includes("inicie sessão") ||
@@ -229,9 +244,11 @@ function looksLikeLoginOrBot(html: string, finalUrl: string) {
     (s.includes("identificação") && s.includes("e-mail")) ||
     s.includes("ingresar") ||
     s.includes("iniciar sesion");
+
   const urlSignals =
     /\/(authorization|auth|login)\b/i.test(finalUrl) ||
     /\/(ingreso|entrar)\b/i.test(finalUrl);
+
   return botSignals || loginSignals || urlSignals;
 }
 
@@ -242,6 +259,7 @@ function isSecUrl(url: string) {
 function cleanMlUrl(input: string): string | null {
   try {
     const u = new URL(input);
+
     const kill = [
       "forceInApp",
       "forceinapp",
@@ -255,10 +273,13 @@ function cleanMlUrl(input: string): string | null {
       "matt_adset_id",
       "matt_platform",
     ];
+
     for (const k of kill) u.searchParams.delete(k);
+
     for (const [k] of Array.from(u.searchParams.entries())) {
       if (k.toLowerCase().startsWith("matt_")) u.searchParams.delete(k);
     }
+
     u.hash = "";
     return u.toString();
   } catch {
@@ -269,8 +290,10 @@ function cleanMlUrl(input: string): string | null {
 function mlCandidateUrls(externalId: string) {
   const parsed = parseMlExternalId(externalId);
   if (!parsed) return [];
+
   const { prefix, digits, raw } = parsed;
   const urls: string[] = [];
+
   if (prefix === "MLB") {
     urls.push(`https://produto.mercadolivre.com.br/MLB-${digits}`);
     urls.push(`https://www.mercadolivre.com.br/MLB-${digits}`);
@@ -279,6 +302,7 @@ function mlCandidateUrls(externalId: string) {
     urls.push(`https://www.mercadolivre.com.br/up/${raw}`);
     urls.push(`https://www.mercadolivre.com.br/p/${raw}`);
   }
+
   return urls;
 }
 
@@ -286,7 +310,273 @@ function sha1(s: string) {
   return crypto.createHash("sha1").update(s).digest("hex");
 }
 
-// ... (todas as funções fetchWithRetryHtml, safeJsonParse, sanitizeMlPriceCents, parseNumberLoose, extractNextData, extractJsonLdBlocks, extractPreloadedState, extractMetaPrice, extractProductOfferFromJsonLd, deepFindPrice permanecem iguais ao seu código original)
+async function fetchWithRetryHtml(
+  url: string,
+  job: JobCounters,
+  maxRetries: number,
+  cookie: string,
+  _log: (s: string) => void,
+  deadlineMs: number,
+) {
+  let attempt = 0;
+  let backoff = 400;
+
+  while (true) {
+    if (Date.now() > deadlineMs) throw new Error("TIME_BUDGET_EXCEEDED");
+
+    await jitter();
+
+    const ac = new AbortController();
+    const to = setTimeout(() => ac.abort(), FETCH_TIMEOUT_MS);
+
+    let res: Response;
+    try {
+      res = await fetch(url, {
+        method: "GET",
+        redirect: "follow",
+        headers: buildBrowserHeaders(cookie),
+        signal: ac.signal,
+      });
+    } catch (e: any) {
+      clearTimeout(to);
+      if (attempt >= maxRetries) throw e;
+
+      job.retries += 1;
+      await sleep(Math.min(backoff + randInt(50, 250), 2500));
+      attempt += 1;
+      backoff *= 2;
+      continue;
+    } finally {
+      clearTimeout(to);
+    }
+
+    if (res.status === 429) {
+      job.http429 += 1;
+      if (attempt >= maxRetries) return res;
+
+      job.retries += 1;
+      const retryAfter = res.headers.get("retry-after");
+      const waitMs = retryAfter ? Number(retryAfter) * 1000 : backoff;
+      await sleep(Math.min(waitMs + randInt(50, 250), 2500));
+      attempt += 1;
+      backoff *= 2;
+      continue;
+    }
+
+    if (res.status >= 500 && res.status <= 599) {
+      if (attempt >= maxRetries) return res;
+
+      job.retries += 1;
+      await sleep(Math.min(backoff + randInt(50, 250), 2500));
+      attempt += 1;
+      backoff *= 2;
+      continue;
+    }
+
+    return res;
+  }
+}
+
+// ---------- parsing de preço ----------
+function safeJsonParse<T = any>(s: string): T | null {
+  try {
+    return JSON.parse(s) as T;
+  } catch {
+    return null;
+  }
+}
+
+function sanitizeMlPriceCents(args: {
+  computedCents: number;
+  prevCents?: number | null;
+}): number {
+  let cents = args.computedCents;
+  const prev = args.prevCents ?? null;
+
+  if (cents >= 500_000 && cents % 100 === 0) {
+    cents = Math.round(cents / 100);
+  }
+
+  if (prev && prev > 0 && cents > 0) {
+    const ratio = cents / prev;
+    if (ratio > 0.45 && ratio < 0.55) {
+      log(
+        `[WARN] Possible parcel price detected: ${cents / 100} vs previous ${prev / 100}`,
+      );
+      return prev;
+    }
+  }
+
+  return cents;
+}
+
+function parseNumberLoose(v: unknown): number | null {
+  if (typeof v === "number" && Number.isFinite(v)) return v;
+  if (typeof v !== "string") return null;
+
+  let s = v
+    .replace(/\s+/g, " ")
+    .replace(/[R$\u00A0]/g, "")
+    .trim();
+
+  const hasComma = s.includes(",");
+  const hasDot = s.includes(".");
+
+  if (hasComma && hasDot) {
+    const lastComma = s.lastIndexOf(",");
+    const lastDot = s.lastIndexOf(".");
+    if (lastComma > lastDot) s = s.replace(/\./g, "").replace(",", ".");
+    else s = s.replace(/,/g, "");
+  } else if (hasComma) {
+    s = s.replace(/\./g, "").replace(",", ".");
+  } else {
+    s = s.replace(/,/g, "");
+  }
+
+  const m = s.match(/-?\d+(\.\d+)?/);
+  if (!m) return null;
+  const n = Number(m[0]);
+  return Number.isFinite(n) ? n : null;
+}
+
+function extractNextData(html: string): any | null {
+  const re = /<script[^>]*id=["']__NEXT_DATA__["'][^>]*>([\s\S]*?)<\/script>/i;
+  const m = html.match(re);
+  if (!m?.[1]) return null;
+  return safeJsonParse(m[1].trim());
+}
+
+function extractJsonLdBlocks(html: string): any[] {
+  const blocks: any[] = [];
+  const re =
+    /<script[^>]*type=["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi;
+
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(html))) {
+    const raw = m[1]?.trim();
+    if (!raw) continue;
+    const parsed = safeJsonParse(raw);
+    if (parsed) blocks.push(parsed);
+  }
+  return blocks;
+}
+
+function extractPreloadedState(html: string): any | null {
+  const re = /__PRELOADED_STATE__\s*=\s*({[\s\S]*?})\s*;?\s*<\/script>/i;
+  const m = html.match(re);
+  if (!m?.[1]) return null;
+  return safeJsonParse(m[1]);
+}
+
+function extractMetaPrice(html: string) {
+  const priceM = html.match(
+    /<meta[^>]+itemprop=["']price["'][^>]+content=["']([^"']+)["'][^>]*>/i,
+  );
+  const curM = html.match(
+    /<meta[^>]+itemprop=["']priceCurrency["'][^>]+content=["']([^"']+)["'][^>]*>/i,
+  );
+  const price = priceM?.[1] ? parseNumberLoose(priceM[1]) : null;
+  const currency = curM?.[1] ?? null;
+  return { price, currency };
+}
+
+function extractProductOfferFromJsonLd(block: any) {
+  const candidates = Array.isArray(block) ? block : [block];
+
+  for (const node of candidates) {
+    if (!node || typeof node !== "object") continue;
+    const type = (node as any)["@type"];
+    const isProduct =
+      type === "Product" || (Array.isArray(type) && type.includes("Product"));
+    if (!isProduct) continue;
+
+    const offers = (node as any).offers;
+    const offerList = Array.isArray(offers) ? offers : offers ? [offers] : [];
+
+    for (const off of offerList) {
+      if (!off || typeof off !== "object") continue;
+
+      const p =
+        parseNumberLoose((off as any).price ?? (off as any).lowPrice ?? null) ??
+        null;
+      if (p === null) continue;
+
+      const cur =
+        typeof (off as any).priceCurrency === "string"
+          ? (off as any).priceCurrency
+          : typeof (node as any).priceCurrency === "string"
+            ? (node as any).priceCurrency
+            : null;
+
+      const original =
+        parseNumberLoose(
+          (off as any).highPrice ?? (off as any).original_price,
+        ) ?? null;
+
+      return {
+        price: p,
+        original,
+        currency: cur,
+        detail: "jsonld:Product.offers.price",
+      };
+    }
+  }
+
+  return null;
+}
+
+function deepFindPrice(obj: any): {
+  price: number | null;
+  original: number | null;
+  currency: string | null;
+} {
+  const stack: any[] = [obj];
+  const seen = new Set<any>();
+
+  while (stack.length) {
+    const cur = stack.pop();
+    if (!cur || typeof cur !== "object") continue;
+    if (seen.has(cur)) continue;
+    seen.add(cur);
+
+    if (Array.isArray(cur)) {
+      for (const it of cur) stack.push(it);
+      continue;
+    }
+
+    const priceRaw =
+      (cur as any).price ??
+      (cur as any).amount ??
+      (cur as any).current_price ??
+      null;
+
+    const currency =
+      (cur as any).currency_id ??
+      (cur as any).priceCurrency ??
+      (cur as any).currency ??
+      null;
+
+    const original =
+      (cur as any).original_price ??
+      (cur as any).originalPrice ??
+      (cur as any).base_price ??
+      (cur as any).old_price ??
+      null;
+
+    const p = parseNumberLoose(priceRaw);
+    if (p !== null) {
+      return {
+        price: p,
+        original: parseNumberLoose(original),
+        currency: typeof currency === "string" ? currency : null,
+      };
+    }
+
+    for (const k of Object.keys(cur)) stack.push((cur as any)[k]);
+  }
+
+  return { price: null, original: null, currency: null };
+}
 
 // ====================== CORREÇÃO PRINCIPAL ======================
 function extractPriceFromHtml(html: string) {
@@ -340,7 +630,7 @@ function extractPriceFromHtml(html: string) {
     }
   }
 
-  // MELHORIA CRÍTICA: Regex que evita preço de parcela ("12x de R$ 16,88")
+  // MELHORIA CRÍTICA: evita preço de parcela ("12x de R$ 16,88")
   const moneyRegex =
     /R\$\s*(?:\d{1,3}(?:\.\d{3})*,)?(\d{1,3}(?:\.\d{3})*,\d{2})(?!\s*(?:x|de|por|sem|juros))/gi;
 
@@ -373,6 +663,17 @@ function extractPriceFromHtml(html: string) {
     evidence: "none" as const,
     evidence_detail: "none" as const,
   };
+}
+
+function hasStrongPrice(found: ReturnType<typeof extractPriceFromHtml>) {
+  return (
+    found.price !== null &&
+    found.price > 0 &&
+    (found.evidence === "meta" ||
+      found.evidence === "jsonld" ||
+      found.evidence === "__NEXT_DATA__" ||
+      found.evidence === "__PRELOADED_STATE__")
+  );
 }
 
 async function validateCookie(cookie: string) {
@@ -422,7 +723,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     console.log(line);
   };
 
-  // supabase disponível também no finally
   const supabase = createClient<any>(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, {
     auth: { persistSession: false },
   });
@@ -454,7 +754,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     return res.status(401).json({ ok: false, error: "Unauthorized" });
   }
 
-  // offset/limit via querystring
   const host =
     readHeader(req, "x-forwarded-host") ||
     readHeader(req, "host") ||
@@ -500,7 +799,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
           priceNotFound: job.priceNotFound,
           http429: job.http429,
           retries: job.retries,
-          durationMs: 0, // ✅ FIX: não existe ainda
+          durationMs: 0,
           stoppedEarly,
           maxRunMs: MAX_RUN_MS,
         },
@@ -607,7 +906,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
               : fetchUrl;
 
           if (!pageRes.ok) {
-            // marca um status útil (sem explodir o job)
             const nowIso = new Date().toISOString();
             await supabase
               .from("store_offers")
@@ -637,7 +935,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             if (!lastErrorSample) lastErrorSample = msg.slice(0, 500);
             log(msg);
 
-            // marca status no offer
             const nowIso = new Date().toISOString();
             await supabase
               .from("store_offers")
@@ -660,7 +957,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
             continue;
           }
 
-          // evita falso-positivo
           if (extracted.evidence === "regex_brl") continue;
 
           if (extracted.price !== null && extracted.price > 0) {
@@ -790,7 +1086,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         finalStatus = "partial";
       }
 
-      // conta failed só para erros "reais", não timeout/gate failfast
       for (const e of poolErrors) {
         const msg = errorMessage(e);
         if (msg.includes("TIME_BUDGET_EXCEEDED")) continue;
