@@ -1,4 +1,4 @@
-// api/cron/ml-resolve-sec.ts - VERSÃO ATUALIZADA (sem cookie + mais estável)
+// api/cron/ml-resolve-sec.ts - VERSÃO SIMPLES E ESTÁVEL (sem cookie)
 import "dotenv/config";
 import type { VercelRequest, VercelResponse } from "@vercel/node";
 import { createClient } from "@supabase/supabase-js";
@@ -8,44 +8,20 @@ const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY!;
 const CRON_SECRET = process.env.CRON_SECRET!;
 const PLATFORM_LABEL = process.env.ML_PLATFORM_LABEL || "mercadolivre";
 
-const MAX_CONCURRENCY = Number(process.env.ML_RESOLVE_CONCURRENCY || "3");
 const MAX_ITEMS = Number(process.env.ML_RESOLVE_MAX_ITEMS || "300");
 
-function sleep(ms: number) {
-  return new Promise((r) => setTimeout(r, ms));
-}
-
-function randInt(min: number, max: number) {
-  return min + Math.floor(Math.random() * (max - min + 1));
-}
-
-async function jitter() {
-  await sleep(randInt(80, 250));
-}
-
-function readHeader(req: VercelRequest, name: string): string {
-  const v = req.headers[name.toLowerCase()];
-  if (Array.isArray(v)) return v[0] ?? "";
-  return (v as string | undefined) ?? "";
-}
-
 function readCronSecret(req: VercelRequest): string {
-  const h = readHeader(req, "x-cron-secret");
+  const h = req.headers["x-cron-secret"] as string | undefined;
   if (h) return h;
 
   try {
-    const host = readHeader(req, "x-forwarded-host") || readHeader(req, "host");
-    const proto = readHeader(req, "x-forwarded-proto") || (host?.includes("localhost") ? "http" : "https");
-    const url = new URL(req.url || "/", `${proto}://${host || "localhost"}`);
+    const url = new URL(req.url || "/", `https://${req.headers.host}`);
     return url.searchParams.get("cron_secret") || "";
   } catch {
     return "";
   }
 }
 
-/**
- * Extrai MLB / MLBU de qualquer URL ou string
- */
 function extractMlExternalId(input?: string | null): string | null {
   if (!input) return null;
   const s = String(input);
@@ -63,21 +39,14 @@ function extractMlExternalId(input?: string | null): string | null {
 }
 
 async function resolveFinalUrl(url: string): Promise<string> {
-  await jitter();
-
   try {
     const res = await fetch(url, {
       method: "GET",
       redirect: "follow",
-      headers: {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-      },
+      headers: { "User-Agent": "Mozilla/5.0" },
     });
-
-    const finalUrl = res.url || url;
-    return finalUrl;
-  } catch (e) {
-    console.error(`Resolve URL failed: ${url}`, e);
+    return res.url || url;
+  } catch {
     return url;
   }
 }
@@ -107,7 +76,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       auth: { persistSession: false },
     });
 
-    // Busca produtos com link do Mercado Livre
     const { data: products, error: pErr } = await supabase
       .from("products")
       .select("id, mercadolivre_link, source_url, is_active")
@@ -115,78 +83,57 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       .not("mercadolivre_link", "is", null)
       .limit(MAX_ITEMS);
 
-    if (pErr) throw new Error(`DB read error: ${pErr.message}`);
+    if (pErr) throw pErr;
 
     const targets = (products as ProductRow[]).filter((p) => {
       const url = (p.mercadolivre_link || "").trim();
-      return url && (url.includes("/sec/") || url.includes("social/"));
+      return url && (url.includes("/sec/") || url.includes("/social/"));
     });
 
-    log(`products scanned=${products?.length ?? 0} | targets=${targets.length}`);
+    log(`scanned=${products?.length ?? 0} targets=${targets.length}`);
 
     let scanned = 0;
     let resolved = 0;
-    let updatedProducts = 0;
-    let upsertedOffers = 0;
-    let failed = 0;
+    let updated = 0;
 
     for (const p of targets) {
       scanned++;
 
       const original = (p.mercadolivre_link || "").trim();
-      const sourceUrl = (p.source_url || "").trim() || null;
+      let finalUrl = await resolveFinalUrl(original);
 
-      let finalUrl: string | null = null;
-
-      try {
-        finalUrl = await resolveFinalUrl(original);
-
-        if (finalUrl.includes("/social/") || finalUrl.includes("forceInApp=true")) {
-          log(`BAD finalUrl product=${p.id} finalUrl=${finalUrl}`);
-          continue;
-        }
-      } catch (e) {
-        failed++;
-        log(`Resolve failed product=${p.id} url=${original}`);
+      if (finalUrl.includes("/social/") || finalUrl.includes("forceInApp=true")) {
+        log(`BAD finalUrl product=${p.id} url=${finalUrl}`);
         continue;
       }
 
-      const mlb = extractMlExternalId(finalUrl) || extractMlExternalId(sourceUrl);
+      const mlb = extractMlExternalId(finalUrl) || extractMlExternalId(p.source_url);
 
       if (!mlb) {
-        failed++;
-        log(`MLB not found product=${p.id} finalUrl=${finalUrl} source=${sourceUrl}`);
+        log(`MLB not found product=${p.id}`);
         continue;
       }
 
       resolved++;
 
-      // Atualiza link limpo na tabela products
-      if (finalUrl && finalUrl !== original) {
+      if (finalUrl !== original) {
         await supabase
           .from("products")
           .update({ mercadolivre_link: finalUrl })
           .eq("id", p.id);
-
-        updatedProducts++;
+        updated++;
       }
 
-      // Atualiza/cria na store_offers
-      await supabase.from("store_offers").upsert(
-        {
-          product_id: p.id,
-          platform: PLATFORM_LABEL,
-          external_id: mlb,
-          url: finalUrl || original,
-          is_active: true,
-          updated_at: new Date().toISOString(),
-        },
-        { onConflict: "product_id,platform" }
-      );
+      await supabase.from("store_offers").upsert({
+        product_id: p.id,
+        platform: PLATFORM_LABEL,
+        external_id: mlb,
+        url: finalUrl,
+        is_active: true,
+        updated_at: new Date().toISOString(),
+      }, { onConflict: "product_id,platform" });
 
-      upsertedOffers++;
-
-      log(`OK product=${p.id} mlb=${mlb} url=${finalUrl || original}`);
+      log(`OK product=${p.id} mlb=${mlb} url=${finalUrl}`);
     }
 
     return res.status(200).json({
@@ -194,9 +141,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       scanned,
       targets: targets.length,
       resolved,
-      updatedProducts,
-      upsertedOffers,
-      failed,
+      updated,
     });
 
   } catch (e: any) {
