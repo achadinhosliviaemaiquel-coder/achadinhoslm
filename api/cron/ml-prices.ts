@@ -1,4 +1,4 @@
-// api/cron/ml-prices.ts - VERSÃO CORRIGIDA E OTIMIZADA
+// api/cron/ml-prices.ts - VERSÃO FINAL ESTÁVEL (chamada individual por item)
 import type { VercelRequest, VercelResponse } from "@vercel/node";
 import { createClient } from "@supabase/supabase-js";
 
@@ -7,11 +7,7 @@ const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY!;
 const CRON_SECRET = process.env.CRON_SECRET!;
 const PLATFORM_LABEL = process.env.ML_PLATFORM_LABEL || "mercadolivre";
 
-const MAX_RUN_MS = Number(process.env.ML_PRICE_MAX_RUN_MS || "45000");
-const BATCH_SIZE = 10; // Reduzido para evitar bad_request
-
 export default async function handler(req: VercelRequest, res: VercelResponse) {
-  const t0 = Date.now();
   const logs: string[] = [];
   const log = (s: string) => {
     const line = `[ml-prices] ${new Date().toISOString()} ${s}`;
@@ -31,7 +27,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       auth: { persistSession: false },
     });
 
-    log("=== INICIANDO ml-prices ===");
+    log("=== ml-prices INICIADO ===");
 
     // Pega token
     const { data: tokenRow } = await supabase
@@ -41,10 +37,44 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       .limit(1)
       .single();
 
-    if (!tokenRow) throw new Error("Nenhum token encontrado");
+    if (!tokenRow)
+      throw new Error("Nenhum token encontrado. Rode o callback primeiro.");
 
     let accessToken = tokenRow.access_token;
-    log(`Token OK (expira em ${tokenRow.expires_at})`);
+
+    // Refresh se expirado
+    if (new Date(tokenRow.expires_at) < new Date() && tokenRow.refresh_token) {
+      log("Token expirado - fazendo refresh...");
+      const refreshRes = await fetch(
+        "https://api.mercadolibre.com/oauth/token",
+        {
+          method: "POST",
+          headers: { "content-type": "application/x-www-form-urlencoded" },
+          body: new URLSearchParams({
+            grant_type: "refresh_token",
+            client_id: process.env.ML_CLIENT_ID!,
+            client_secret: process.env.ML_CLIENT_SECRET!,
+            refresh_token: tokenRow.refresh_token,
+          }).toString(),
+        },
+      );
+
+      const data = await refreshRes.json();
+      accessToken = data.access_token;
+
+      await supabase
+        .from("ml_oauth_tokens")
+        .update({
+          access_token: data.access_token,
+          refresh_token: data.refresh_token,
+          expires_at: new Date(
+            Date.now() + data.expires_in * 1000,
+          ).toISOString(),
+        })
+        .eq("id", tokenRow.id);
+
+      log("Token renovado com sucesso");
+    }
 
     // Busca ofertas
     const { data: offers } = await supabase
@@ -56,80 +86,63 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     log(`Encontradas ${offers?.length || 0} ofertas ativas`);
 
     let updated = 0;
-    const updates: any[] = [];
 
-    // Processa em batches pequenos
-    for (let i = 0; i < (offers?.length || 0); i += BATCH_SIZE) {
-      const batch = offers!.slice(i, i + BATCH_SIZE);
-
-      // Filtra apenas MLB válidos
-      const validBatch = batch.filter(
-        (o) => o.external_id && o.external_id.startsWith("MLB"),
-      );
-      if (validBatch.length === 0) continue;
-
-      const ids = validBatch.map((o) => o.external_id).join(",");
-
-      log(`Buscando ${validBatch.length} itens: ${ids}`);
-
-      const apiRes = await fetch(
-        `https://api.mercadolibre.com/items?ids=${ids}`,
-        {
-          headers: { Authorization: `Bearer ${accessToken}` },
-        },
-      );
-
-      if (!apiRes.ok) {
-        log(`API erro ${apiRes.status}`);
+    for (const offer of offers || []) {
+      const mlb = offer.external_id;
+      if (!mlb || (!mlb.startsWith("MLB") && !mlb.startsWith("MLBU"))) {
+        log(`Ignorado (MLB inválido): ${mlb}`);
         continue;
       }
 
-      const items = await apiRes.json();
+      log(`Buscando item: ${mlb}`);
 
-      for (const item of Array.isArray(items) ? items : [items]) {
-        if (!item || item.error || !item.price) {
-          log(`Item sem preço ou erro: ${item?.id || "unknown"}`);
-          continue;
-        }
+      const apiRes = await fetch(`https://api.mercadolibre.com/items/${mlb}`, {
+        headers: { Authorization: `Bearer ${accessToken}` },
+      });
 
-        const offer = validBatch.find((o) => o.external_id === item.id);
-        if (!offer) continue;
+      if (!apiRes.ok) {
+        log(`API erro ${apiRes.status} para ${mlb}`);
+        continue;
+      }
 
-        updates.push({
+      const item = await apiRes.json();
+
+      if (item.error) {
+        log(`API error: ${item.error}`);
+        continue;
+      }
+
+      if (!item.price || item.price <= 0) {
+        log(`Sem preço válido para ${mlb}`);
+        continue;
+      }
+
+      const updates = [
+        {
           offer_id: item.id,
           price: item.price,
           verified_at: new Date().toISOString(),
-        });
+        },
+      ];
 
-        updated++;
-        log(`✅ Adicionado update: ${item.id} → R$ ${item.price}`);
-      }
-    }
-
-    // Chama função do banco
-    if (updates.length > 0) {
-      log(`Chamando apply_offer_price_updates com ${updates.length} preços...`);
       const { error } = await supabase.rpc("apply_offer_price_updates", {
         p_updates: updates,
       });
 
       if (error) {
-        log(`ERRO na função: ${error.message}`);
-        throw error;
+        log(`Erro na função: ${error.message}`);
+      } else {
+        updated++;
+        log(`✅ SUCESSO: ${item.id} → R$ ${item.price}`);
       }
-      log("✅ apply_offer_price_updates executada com sucesso");
-    } else {
-      log("NENHUM preço encontrado na API");
     }
 
-    const durationMs = Date.now() - t0;
+    log(`Finalizado! ${updated} preços atualizados`);
 
     return res.status(200).json({
       ok: true,
       updated,
       total: offers?.length || 0,
-      durationMs,
-      logs: logs.slice(-50),
     });
   } catch (e: any) {
     console.error(e);
