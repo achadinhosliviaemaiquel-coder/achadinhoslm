@@ -158,18 +158,86 @@ async function mlFetch(url: string, userToken: string): Promise<Response> {
 }
 
 /**
+ * Extrai preço do HTML da página do produto ML.
+ * Tenta JSON-LD (schema.org), Open Graph price meta e padrão preloadedState.
+ */
+async function getPriceFromPageHtml(
+  url: string,
+  log?: (s: string) => void,
+): Promise<number | null> {
+  try {
+    const res = await fetch(url, { headers: ML_BROWSER_HEADERS, redirect: "follow" });
+    if (!res.ok) {
+      log?.(`page HTML status=${res.status} para ${url}`);
+      return null;
+    }
+    const html = await res.text();
+
+    // 1. JSON-LD (schema.org Product → offers.price)
+    for (const m of html.matchAll(/<script[^>]+type="application\/ld\+json"[^>]*>([\s\S]*?)<\/script>/gi)) {
+      try {
+        const data = JSON.parse(m[1].trim());
+        const nodes = Array.isArray(data) ? data : [data];
+        for (const node of nodes) {
+          const offerNode = node?.offers ?? node?.["@graph"]?.find?.((n: any) => n?.["@type"] === "Offer");
+          const raw = offerNode?.price ?? (Array.isArray(offerNode) ? offerNode[0]?.price : null);
+          const p = typeof raw === "string" ? parseFloat(raw.replace(",", ".")) : Number(raw);
+          if (isFinite(p) && p > 0) {
+            log?.(`JSON-LD preço R$ ${p} de ${url}`);
+            return p;
+          }
+        }
+      } catch {}
+    }
+
+    // 2. Open Graph / itemprop meta
+    const ogMatch =
+      html.match(/<meta[^>]+property="product:price:amount"[^>]+content="([\d.,]+)"/i)?.[1] ??
+      html.match(/<meta[^>]+content="([\d.,]+)"[^>]+property="product:price:amount"/i)?.[1] ??
+      html.match(/<meta[^>]+itemprop="price"[^>]+content="([\d.,]+)"/i)?.[1] ??
+      html.match(/<meta[^>]+content="([\d.,]+)"[^>]+itemprop="price"/i)?.[1];
+    if (ogMatch) {
+      const p = parseFloat(ogMatch.replace(",", "."));
+      if (isFinite(p) && p > 0) {
+        log?.(`OG/itemprop preço R$ ${p} de ${url}`);
+        return p;
+      }
+    }
+
+    // 3. window.__PRELOADED_STATE__ price pattern (ML React SPA)
+    const preloadMatch = html.match(/"price"\s*:\s*([\d.]+)/);
+    if (preloadMatch) {
+      const p = parseFloat(preloadMatch[1]);
+      if (isFinite(p) && p > 0) {
+        log?.(`preloadedState preço R$ ${p} de ${url}`);
+        return p;
+      }
+    }
+
+    log?.(`page sem preço para ${url}`);
+    return null;
+  } catch (e: any) {
+    log?.(`page HTML erro: ${e?.message}`);
+    return null;
+  }
+}
+
+/**
  * Busca preço do ML.
- * @param itemId   ID a usar no endpoint /items/ (pode ser ml_item_id ou external_id)
- * @param catalogId  ID do catálogo (external_id) para fallback de busca por catalog_product_id
- * @param userToken  Token OAuth do usuário (fallback se endpoint não for público)
+ * Estratégias em ordem:
+ *  1. API /items/{ml_item_id} — endpoint de listing
+ *  2. Scraping HTML da página do produto (store_offers.url)
+ *  3. API /sites/MLB/search?catalog_product_id=
+ *  4. Permalink da /products/{catalogId} → scraping HTML
  */
 async function getPriceFromML(
   itemId: string,
   catalogId: string,
   userToken: string,
+  offerUrl: string | null,
   log?: (s: string) => void,
 ): Promise<number | null> {
-  // 1. Tenta endpoint /items/ (funciona para listings individuais; ml_item_id já resolvido)
+  // 1. API /items/ com token OAuth (endpoint de listing — funciona quando não bloqueado)
   try {
     const res = await mlFetch(`https://api.mercadolibre.com/items/${itemId}`, userToken);
     if (res.ok) {
@@ -177,13 +245,19 @@ async function getPriceFromML(
       if (item.price && item.price > 0) return item.price;
       log?.(`items OK mas price=0 para ${itemId}`);
     } else {
-      log?.(`items status=${res.status} para ${itemId} — tentando catalog search`);
+      log?.(`items status=${res.status} para ${itemId}`);
     }
   } catch (e: any) {
     log?.(`items erro para ${itemId}: ${e?.message}`);
   }
 
-  // 2. Fallback: busca por catalog_product_id via search
+  // 2. Scraping HTML da URL já resolvida (store_offers.url)
+  if (offerUrl) {
+    const price = await getPriceFromPageHtml(offerUrl, log);
+    if (price !== null) return price;
+  }
+
+  // 3. API search por catalog_product_id
   try {
     const res = await mlFetch(
       `https://api.mercadolibre.com/sites/MLB/search?catalog_product_id=${catalogId}&limit=1`,
@@ -201,39 +275,24 @@ async function getPriceFromML(
       log?.(`catalog search status=${res.status} para ${catalogId}`);
     }
   } catch (e: any) {
-    log?.(`catalog search erro para ${catalogId}: ${e?.message}`);
+    log?.(`catalog search erro: ${e?.message}`);
   }
 
-  // 3. Fallback: endpoint /products/ (catálogo ML — retorna buy_box_winner com preço)
-  try {
-    const res = await mlFetch(
-      `https://api.mercadolibre.com/products/${catalogId}`,
-      userToken,
-    );
-    if (res.ok) {
-      const data = await res.json();
-      // Log das chaves de diagnóstico (apenas primeira vez, evita flood)
-      log?.(`/products/${catalogId} keys=${Object.keys(data).join(",")}`);
-      if (data.buy_box_winner !== undefined) {
-        log?.(`buy_box_winner=${JSON.stringify(data.buy_box_winner).slice(0, 300)}`);
+  // 4. /products/ → permalink → scraping HTML (para produtos sem url resolvida)
+  if (!offerUrl) {
+    try {
+      const res = await mlFetch(`https://api.mercadolibre.com/products/${catalogId}`, userToken);
+      if (res.ok) {
+        const data = await res.json();
+        const permalink: string | undefined = data.permalink;
+        if (permalink) {
+          const price = await getPriceFromPageHtml(permalink, log);
+          if (price !== null) return price;
+        }
       }
-      const price =
-        data.buy_box_winner?.price ??
-        data.buy_box_winner?.original_price ??
-        (Array.isArray(data.offers) ? (data.offers[0]?.price ?? null) : null) ??
-        data.price ??
-        data.settings?.price ??
-        null;
-      if (price && price > 0) {
-        log?.(`/products/${catalogId} → R$ ${price}`);
-        return price;
-      }
-      log?.(`/products/${catalogId} OK mas sem preço`);
-    } else {
-      log?.(`/products/${catalogId} status=${res.status}`);
+    } catch (e: any) {
+      log?.(`/products/ permalink erro: ${e?.message}`);
     }
-  } catch (e: any) {
-    log?.(`/products/${catalogId} erro: ${e?.message}`);
   }
 
   return null;
@@ -399,7 +458,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       } else {
         const label = effectiveItemId !== mlb ? `${mlb} (item=${effectiveItemId})` : mlb;
         log(`Buscando preço para ${label}...`);
-        price = await getPriceFromML(effectiveItemId, mlb, tokenForItems, log);
+        price = await getPriceFromML(effectiveItemId, mlb, tokenForItems, offer.url ?? null, log);
       }
 
       if (price === null) {
