@@ -5,7 +5,7 @@
       "schedule": "0 12 * * *"
     },
     {
-      "path": "/api/cron/ml-prices?offset=0&limit=10",
+      "path": "/api/cron/ml-prices?offset=0&limit=50",
       "schedule": "5 12 * * *"
     },
     {
