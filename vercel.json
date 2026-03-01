@@ -23,6 +23,7 @@
   "rewrites": [
     { "source": "/api/(.*)", "destination": "/api/$1" },
     { "source": "/go/:store/:slug", "destination": "/api/go?store=:store&slug=:slug" },
+    { "source": "/sitemap.xml", "destination": "/api/sitemap.xml" },
     { "source": "/(.*)", "destination": "/index.html" }
   ]
 }

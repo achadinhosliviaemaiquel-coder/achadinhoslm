@@ -8,11 +8,13 @@ import { Input } from "@/components/ui/input"
 import { Textarea } from "@/components/ui/textarea"
 import { Label } from "@/components/ui/label"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
+import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem } from "@/components/ui/command"
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
 import { useCreateProduct, useUpdateProduct } from "@/hooks/useProducts"
 import { useBrands } from "@/hooks/useBrands"
 import { useToast } from "@/hooks/use-toast"
 import { CATEGORY_LABELS, type Product, type ProductCategory } from "@/types/product"
-import { Loader2 } from "lucide-react"
+import { Loader2, ChevronsUpDown, Check } from "lucide-react"
 import BrandFormModal from "@/components/admin/BrandFormModal"
 import { getSupabase } from "@/integrations/supabase/client"
 import { useQueryClient } from "@tanstack/react-query"
@@ -24,6 +26,9 @@ const SUBCATEGORY_OPTIONS: Record<string, { value: string; label: string; keywor
     { value: "protetor_solar", label: "Protetor Solar", keywords: ["protetor", "solar", "fps"] },
     { value: "tratamento", label: "Tratamentos", keywords: ["serum", "ácido", "acido", "antiacne", "reparador"] },
     { value: "capilar", label: "Capilar", keywords: ["shampoo", "condicionador", "capilar"] },
+    { value: "perfume", label: "Perfumes", keywords: ["perfume", "colonia", "colônia", "deo"] },
+    { value: "maquiagem", label: "Maquiagem", keywords: ["maquiagem", "batom", "base", "rímel", "rimel"] },
+    { value: "unhas", label: "Unhas", keywords: ["esmalte", "unhas", "gel nail"] },
     { value: "kits", label: "Kits", keywords: ["kit", "combo"] },
   ],
   casa: [
@@ -32,6 +37,8 @@ const SUBCATEGORY_OPTIONS: Record<string, { value: string; label: string; keywor
     { value: "cozinha", label: "Cozinha", keywords: ["cafeteira", "panela", "faca", "mixer", "microondas", "forno"] },
     { value: "limpeza", label: "Limpeza", keywords: ["mop", "aspirador", "pano"] },
     { value: "organizacao", label: "Organização", keywords: ["organizador", "caixa", "gaveta"] },
+    { value: "decoracao", label: "Decoração", keywords: ["decor", "vaso", "quadro", "almofada"] },
+    { value: "lavanderia", label: "Lavanderia", keywords: ["lavanderia", "sabão", "sabao", "amaciante", "secadora"] },
   ],
   eletrodomesticos: [
     { value: "airfryer", label: "Air Fryers", keywords: ["airfryer"] },
@@ -39,6 +46,7 @@ const SUBCATEGORY_OPTIONS: Record<string, { value: string; label: string; keywor
     { value: "aspirador", label: "Aspiradores", keywords: ["aspirador"] },
     { value: "cafeteira", label: "Cafeteiras Elétricas", keywords: ["cafeteira"] },
     { value: "forno", label: "Fornos Elétricos", keywords: ["forno"] },
+    { value: "climatizacao", label: "Climatização", keywords: ["ar condicionado", "ventilador", "climatizador", "purificador"] },
   ],
   eletronicos: [
     { value: "audio", label: "Áudio", keywords: ["fone", "bluetooth", "headset"] },
@@ -72,6 +80,8 @@ const SUBCATEGORY_OPTIONS: Record<string, { value: string; label: string; keywor
     { value: "creatina", label: "Creatina", keywords: ["creatina"] },
     { value: "whey", label: "Whey", keywords: ["whey"] },
     { value: "pretreino", label: "Pré-Treino", keywords: ["pre", "pré"] },
+    { value: "vitaminas", label: "Vitaminas", keywords: ["vitamina", "multivitaminico", "zinco", "magnesio"] },
+    { value: "proteina", label: "Proteína", keywords: ["proteina", "albumina", "caseina"] },
   ],
 }
 
@@ -133,9 +143,6 @@ const productSchema = z.object({
     message: 'Categoria inválida ("all")',
   }),
 
-  // ✅ Marca agora é SEMPRE aceitável:
-  // - se vier vazio/null => "generico"
-  // - se vier preenchida => mantém
   brand_slug: z.preprocess(
     (v) => {
       const s = String(v ?? "").trim()
@@ -174,6 +181,8 @@ interface Props {
 export function ProductForm({ product, onSuccess }: Props) {
   const [isSubmitting, setIsSubmitting] = useState(false)
   const [brandModalOpen, setBrandModalOpen] = useState(false)
+  const [subcategoryOpen, setSubcategoryOpen] = useState(false)
+  const [subcategoryInput, setSubcategoryInput] = useState("")
 
   const queryClient = useQueryClient()
   const createProduct = useCreateProduct()
@@ -239,13 +248,13 @@ export function ProductForm({ product, onSuccess }: Props) {
       mercadolivre_price: (product as any)?.mercadolivre_price ?? null,
       amazon_price: (product as any)?.amazon_price ?? null,
       review_url: (product as any)?.review_url ?? "",
-      subcategory: (product as any)?.subcategory ?? "",
     })
   }, [product, reset])
 
   const category = watch("category") || ""
   const name = watch("name")
   const brandSlugWatched = watch("brand_slug") || "generico"
+  const subcategoryValue = watch("subcategory") || ""
 
   const { data: brands, refetch } = useBrands(category)
 
@@ -258,7 +267,6 @@ export function ProductForm({ product, onSuccess }: Props) {
     }
   }
 
-  // ✅ AUTO: recalcula "price_label" a partir do menor preço
   const shopeePrice = watch("shopee_price")
   const mlPrice = watch("mercadolivre_price")
   const amazonPrice = watch("amazon_price")
@@ -271,8 +279,6 @@ export function ProductForm({ product, onSuccess }: Props) {
     setValue("price_label", autoPriceLabel ?? "", { shouldDirty: true, shouldValidate: false })
   }, [autoPriceLabel, setValue])
 
-  // ✅ Se a categoria mudar e a marca atual não existir na lista dessa categoria,
-  // volta pra "generico" (evita Select ficar com valor inválido/invisível)
   useEffect(() => {
     if (!category) return
     if (!brands) return
@@ -304,12 +310,10 @@ export function ProductForm({ product, onSuccess }: Props) {
       const benefitsArr = data.benefits ? data.benefits.split("\n").map((b) => b.trim()).filter(Boolean) : []
       const imagesArr = data.image_urls ? data.image_urls.split("\n").map((i) => i.trim()).filter(Boolean) : []
 
-      // ✅ força o label calculado (100% automático)
       const finalPriceLabel =
         computeMinPriceLabel([data.shopee_price ?? null, data.mercadolivre_price ?? null, data.amazon_price ?? null]) ??
         null
 
-      // ✅ garante sempre "generico" se vier vazio
       const brandSlug = (data.brand_slug || "generico").trim() || "generico"
 
       const productData: any = {
@@ -374,6 +378,18 @@ export function ProductForm({ product, onSuccess }: Props) {
     const match = SUBCATEGORY_OPTIONS[category].find((sub) => sub.keywords.some((k) => normalizedName.includes(k)))
     if (match) setValue("subcategory", match.value)
   }, [name, category, setValue])
+
+  // Subcategory combobox helpers
+  const subcategoryOptions = SUBCATEGORY_OPTIONS[category] ?? []
+  const subcategoryFiltered = subcategoryInput.trim()
+    ? subcategoryOptions.filter(
+        (o) =>
+          o.label.toLowerCase().includes(subcategoryInput.toLowerCase()) ||
+          o.value.toLowerCase().includes(subcategoryInput.toLowerCase()),
+      )
+    : subcategoryOptions
+  const subcategoryLabel =
+    subcategoryOptions.find((o) => o.value === subcategoryValue)?.label ?? subcategoryValue
 
   return (
     <>
@@ -450,7 +466,7 @@ export function ProductForm({ product, onSuccess }: Props) {
           )}
         />
 
-        {category && SUBCATEGORY_OPTIONS[category] && (
+        {category && (
           <div className="space-y-2">
             <Label>Subcategoria</Label>
 
@@ -458,23 +474,89 @@ export function ProductForm({ product, onSuccess }: Props) {
               name="subcategory"
               control={control}
               render={({ field }) => (
-                <Select value={field.value || ""} onValueChange={field.onChange}>
-                  <SelectTrigger>
-                    <SelectValue placeholder="Selecione uma subcategoria" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    {SUBCATEGORY_OPTIONS[category].map((sub) => (
-                      <SelectItem key={sub.value} value={sub.value}>
-                        {sub.label}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
+                <Popover open={subcategoryOpen} onOpenChange={setSubcategoryOpen}>
+                  <PopoverTrigger asChild>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      role="combobox"
+                      className="w-full justify-between font-normal"
+                    >
+                      <span className="truncate">
+                        {field.value ? (subcategoryLabel || field.value) : "Selecione ou digite uma subcategoria"}
+                      </span>
+                      <ChevronsUpDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
+                    </Button>
+                  </PopoverTrigger>
+                  <PopoverContent className="w-full p-0" align="start">
+                    <Command>
+                      <CommandInput
+                        placeholder="Buscar ou digitar..."
+                        value={subcategoryInput}
+                        onValueChange={setSubcategoryInput}
+                      />
+                      <CommandEmpty>
+                        {subcategoryInput.trim() ? (
+                          <button
+                            type="button"
+                            className="w-full px-4 py-2 text-left text-sm hover:bg-muted"
+                            onClick={() => {
+                              const custom = subcategoryInput.trim().toLowerCase().replace(/\s+/g, "_")
+                              field.onChange(custom)
+                              setSubcategoryOpen(false)
+                              setSubcategoryInput("")
+                            }}
+                          >
+                            Usar: "{subcategoryInput.trim()}"
+                          </button>
+                        ) : (
+                          <span className="block px-4 py-2 text-sm text-muted-foreground">
+                            Nenhuma opção encontrada.
+                          </span>
+                        )}
+                      </CommandEmpty>
+                      <CommandGroup>
+                        {subcategoryFiltered.map((opt) => (
+                          <CommandItem
+                            key={opt.value}
+                            value={opt.value}
+                            onSelect={() => {
+                              field.onChange(opt.value)
+                              setSubcategoryOpen(false)
+                              setSubcategoryInput("")
+                            }}
+                          >
+                            <Check
+                              className={`mr-2 h-4 w-4 ${field.value === opt.value ? "opacity-100" : "opacity-0"}`}
+                            />
+                            {opt.label}
+                          </CommandItem>
+                        ))}
+                        {subcategoryInput.trim() &&
+                          !subcategoryFiltered.some(
+                            (o) => o.value === subcategoryInput.trim().toLowerCase().replace(/\s+/g, "_"),
+                          ) && (
+                            <CommandItem
+                              value={`custom:${subcategoryInput}`}
+                              onSelect={() => {
+                                const custom = subcategoryInput.trim().toLowerCase().replace(/\s+/g, "_")
+                                field.onChange(custom)
+                                setSubcategoryOpen(false)
+                                setSubcategoryInput("")
+                              }}
+                            >
+                              Usar: "{subcategoryInput.trim()}"
+                            </CommandItem>
+                          )}
+                      </CommandGroup>
+                    </Command>
+                  </PopoverContent>
+                </Popover>
               )}
             />
 
             <p className="text-xs text-muted-foreground">
-              Opcional. Ajuda na organização e filtros (ex.: Moda → Vestidos).
+              Opcional. Ajuda na organização e filtros. Pode digitar um valor personalizado.
             </p>
           </div>
         )}
@@ -591,6 +673,9 @@ export function ProductForm({ product, onSuccess }: Props) {
         </Button>
       </form>
 
+      {/* Override de preço do cron — apenas no modo edição */}
+      {product && <PriceOverrideSection productId={(product as any).id} />}
+
       <BrandFormModal
         open={brandModalOpen}
         onOpenChange={setBrandModalOpen}
@@ -601,5 +686,98 @@ export function ProductForm({ product, onSuccess }: Props) {
         }}
       />
     </>
+  )
+}
+
+// ─── Override de preço manual ─────────────────────────────────────────────────
+
+function PriceOverrideSection({ productId }: { productId: string }) {
+  const [overrides, setOverrides] = useState<Record<string, string>>({})
+  const [saving, setSaving] = useState(false)
+  const [loaded, setLoaded] = useState(false)
+  const { toast } = useToast()
+
+  useEffect(() => {
+    if (!productId) return
+    const supabase = getSupabase()
+    supabase
+      .from("store_offers")
+      .select("id, platform, price_override_brl")
+      .eq("product_id", productId)
+      .eq("is_active", true)
+      .then(({ data }) => {
+        const map: Record<string, string> = {}
+        for (const row of (data ?? []) as { id: number; platform: string; price_override_brl: number | null }[]) {
+          map[row.platform] = row.price_override_brl != null ? String(row.price_override_brl) : ""
+        }
+        setOverrides(map)
+        setLoaded(true)
+      })
+  }, [productId])
+
+  const handleSave = async () => {
+    setSaving(true)
+    try {
+      const supabase = getSupabase()
+      const { data: offers } = await supabase
+        .from("store_offers")
+        .select("id, platform")
+        .eq("product_id", productId)
+        .eq("is_active", true)
+
+      for (const offer of (offers ?? []) as { id: number; platform: string }[]) {
+        const raw = overrides[offer.platform] ?? ""
+        const parsed = raw.trim() === "" ? null : Number(raw.replace(",", "."))
+        const val = parsed !== null && Number.isFinite(parsed) ? parsed : null
+        await supabase.from("store_offers").update({ price_override_brl: val }).eq("id", offer.id)
+      }
+
+      toast({ title: "Overrides de preço salvos!" })
+    } catch (e: any) {
+      toast({ variant: "destructive", title: "Erro ao salvar overrides", description: e?.message })
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  if (!loaded) return null
+
+  const platforms = ["mercadolivre", "shopee", "amazon"]
+  const platformLabels: Record<string, string> = {
+    mercadolivre: "Mercado Livre",
+    shopee: "Shopee",
+    amazon: "Amazon",
+  }
+
+  const availablePlatforms = platforms.filter((p) => p in overrides)
+  if (availablePlatforms.length === 0) return null
+
+  return (
+    <div className="mt-6 rounded-xl border p-4 space-y-3">
+      <div>
+        <h3 className="font-semibold text-sm">Override de preço (cron)</h3>
+        <p className="text-xs text-muted-foreground">
+          Quando definido, o cron usa este valor e ignora o preço da API. Deixe em branco para usar o preço automático.
+        </p>
+      </div>
+
+      {availablePlatforms.map((platform) => (
+        <div key={platform} className="space-y-1">
+          <Label className="text-xs">{platformLabels[platform]}</Label>
+          <Input
+            type="number"
+            step="0.01"
+            placeholder="Ex: 39.90 (vazio = automático)"
+            value={overrides[platform] ?? ""}
+            onChange={(e) => setOverrides((prev) => ({ ...prev, [platform]: e.target.value }))}
+          />
+        </div>
+      ))}
+
+      <Button type="button" size="sm" variant="secondary" onClick={handleSave} disabled={saving}>
+        {saving ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
+        Salvar overrides
+      </Button>
+    </div>
   )
 }

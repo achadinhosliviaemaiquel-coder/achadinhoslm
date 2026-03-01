@@ -410,7 +410,7 @@ export default function ProductPage() {
         { name: product.name, url: `/product/${product.slug}` },
       ]}
       seo={{
-        title: `${product.name} | Menor preço e onde comprar`,
+        title: `${product.name}${Number.isFinite(finalPrice) ? ` | a partir de R$\u00a0${finalPrice.toFixed(2).replace(".", ",")}` : ""} | Achadinhos LM`,
         description: (product.description || `Confira onde comprar ${product.name} com o menor preço.`).slice(0, 160),
         canonical: `/product/${product.slug}`,
         ogImage: product.image_urls?.[0] || "/og-home.jpg",
@@ -420,6 +420,12 @@ export default function ProductPage() {
       {productSchema ? (
         <Helmet>
           <script type="application/ld+json">{JSON.stringify(productSchema)}</script>
+          {Number.isFinite(finalPrice) ? (
+            <meta property="og:product:price:amount" content={finalPrice.toFixed(2)} />
+          ) : null}
+          {Number.isFinite(finalPrice) ? (
+            <meta property="product:price:currency" content="BRL" />
+          ) : null}
         </Helmet>
       ) : null}
 

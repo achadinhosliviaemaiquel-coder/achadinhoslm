@@ -14,25 +14,34 @@ import { Loader2, Pencil, Trash2, Plus } from "lucide-react"
 type BrandRow = {
   id: string
   name: string
+  slug: string
+  logo_url: string | null
   created_at?: string
+}
+
+function isGenericBrand(slug: string) {
+  return slug.toLowerCase().includes("generico") || slug.toLowerCase().startsWith("generica-")
 }
 
 async function fetchBrands(): Promise<BrandRow[]> {
   const supabase = getSupabase()
-  const { data, error } = await supabase.from("brands").select("id,name,created_at").order("name", { ascending: true })
+  const { data, error } = await supabase
+    .from("brands")
+    .select("id,name,slug,logo_url,created_at")
+    .order("name", { ascending: true })
   if (error) throw error
   return (data ?? []) as BrandRow[]
 }
 
-async function createBrand(name: string): Promise<void> {
+async function createBrand(name: string, logo_url: string | null): Promise<void> {
   const supabase = getSupabase()
-  const { error } = await supabase.from("brands").insert({ name })
+  const { error } = await supabase.from("brands").insert({ name, logo_url: logo_url || null })
   if (error) throw error
 }
 
-async function updateBrand(id: string, name: string): Promise<void> {
+async function updateBrand(id: string, name: string, logo_url: string | null): Promise<void> {
   const supabase = getSupabase()
-  const { error } = await supabase.from("brands").update({ name }).eq("id", id)
+  const { error } = await supabase.from("brands").update({ name, logo_url: logo_url || null }).eq("id", id)
   if (error) throw error
 }
 
@@ -58,14 +67,15 @@ export default function AdminBrandsPanel() {
   }, [data, search])
 
   const createMut = useMutation({
-    mutationFn: (name: string) => createBrand(name),
+    mutationFn: ({ name, logo_url }: { name: string; logo_url: string | null }) => createBrand(name, logo_url),
     onSuccess: async () => {
       await qc.invalidateQueries({ queryKey: ["admin", "brands"] })
     },
   })
 
   const updateMut = useMutation({
-    mutationFn: ({ id, name }: { id: string; name: string }) => updateBrand(id, name),
+    mutationFn: ({ id, name, logo_url }: { id: string; name: string; logo_url: string | null }) =>
+      updateBrand(id, name, logo_url),
     onSuccess: async () => {
       await qc.invalidateQueries({ queryKey: ["admin", "brands"] })
     },
@@ -94,7 +104,10 @@ export default function AdminBrandsPanel() {
             onChange={(e) => setSearch(e.target.value)}
           />
 
-          <CreateBrandDialog isSubmitting={createMut.isPending} onCreate={(name) => createMut.mutate(name)} />
+          <CreateBrandDialog
+            isSubmitting={createMut.isPending}
+            onCreate={(name, logo_url) => createMut.mutate({ name, logo_url })}
+          />
         </div>
       </CardHeader>
 
@@ -109,6 +122,7 @@ export default function AdminBrandsPanel() {
           <Table>
             <TableHeader>
               <TableRow>
+                <TableHead className="w-[56px]">Logo</TableHead>
                 <TableHead>Nome</TableHead>
                 <TableHead className="w-[180px] text-right">Ações</TableHead>
               </TableRow>
@@ -117,27 +131,43 @@ export default function AdminBrandsPanel() {
             <TableBody>
               {isLoading ? (
                 <TableRow>
-                  <TableCell colSpan={2} className="py-8 text-center text-sm text-muted-foreground">
+                  <TableCell colSpan={3} className="py-8 text-center text-sm text-muted-foreground">
                     <Loader2 className="mx-auto mb-2 h-5 w-5 animate-spin" />
                     Carregando marcas...
                   </TableCell>
                 </TableRow>
               ) : filtered.length === 0 ? (
                 <TableRow>
-                  <TableCell colSpan={2} className="py-8 text-center text-sm text-muted-foreground">
+                  <TableCell colSpan={3} className="py-8 text-center text-sm text-muted-foreground">
                     Nenhuma marca encontrada.
                   </TableCell>
                 </TableRow>
               ) : (
                 filtered.map((b) => (
                   <TableRow key={b.id}>
+                    <TableCell>
+                      {b.logo_url ? (
+                        <img
+                          src={b.logo_url}
+                          alt={b.name}
+                          className="h-10 w-10 rounded object-contain border bg-white"
+                          onError={(e) => {
+                            ;(e.currentTarget as HTMLImageElement).style.display = "none"
+                          }}
+                        />
+                      ) : (
+                        <div className="h-10 w-10 rounded border bg-muted flex items-center justify-center text-xs text-muted-foreground">
+                          —
+                        </div>
+                      )}
+                    </TableCell>
                     <TableCell className="font-medium">{b.name}</TableCell>
                     <TableCell className="text-right">
                       <div className="flex justify-end gap-2">
                         <EditBrandDialog
                           brand={b}
                           isSubmitting={updateMut.isPending}
-                          onSave={(name) => updateMut.mutate({ id: b.id, name })}
+                          onSave={(name, logo_url) => updateMut.mutate({ id: b.id, name, logo_url })}
                         />
 
                         <Button
@@ -175,16 +205,18 @@ function CreateBrandDialog({
   onCreate,
 }: {
   isSubmitting: boolean
-  onCreate: (name: string) => void
+  onCreate: (name: string, logo_url: string | null) => void
 }) {
   const [open, setOpen] = useState(false)
   const [name, setName] = useState("")
+  const [logoUrl, setLogoUrl] = useState("")
 
   const submit = () => {
     const v = name.trim()
     if (!v || isSubmitting) return
-    onCreate(v)
+    onCreate(v, logoUrl.trim() || null)
     setName("")
+    setLogoUrl("")
     setOpen(false)
   }
 
@@ -202,9 +234,31 @@ function CreateBrandDialog({
           <DialogTitle>Criar marca</DialogTitle>
         </DialogHeader>
 
-        <div className="space-y-2">
-          <Label>Nome</Label>
-          <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="Ex: Philips" />
+        <div className="space-y-4">
+          <div className="space-y-2">
+            <Label>Nome</Label>
+            <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="Ex: Philips" />
+          </div>
+
+          <div className="space-y-2">
+            <Label>URL do Logo (opcional)</Label>
+            <Input
+              value={logoUrl}
+              onChange={(e) => setLogoUrl(e.target.value)}
+              placeholder="https://exemplo.com/logo.png"
+              type="url"
+            />
+            {logoUrl.trim() && (
+              <img
+                src={logoUrl.trim()}
+                alt="Preview"
+                className="h-12 w-12 rounded object-contain border bg-white"
+                onError={(e) => {
+                  ;(e.currentTarget as HTMLImageElement).style.display = "none"
+                }}
+              />
+            )}
+          </div>
         </div>
 
         <DialogFooter>
@@ -228,15 +282,16 @@ function EditBrandDialog({
 }: {
   brand: BrandRow
   isSubmitting: boolean
-  onSave: (name: string) => void
+  onSave: (name: string, logo_url: string | null) => void
 }) {
   const [open, setOpen] = useState(false)
   const [name, setName] = useState(brand.name)
+  const [logoUrl, setLogoUrl] = useState(brand.logo_url ?? "")
 
   const submit = () => {
     const v = name.trim()
     if (!v || isSubmitting) return
-    onSave(v)
+    onSave(v, logoUrl.trim() || null)
     setOpen(false)
   }
 
@@ -246,7 +301,10 @@ function EditBrandDialog({
       onOpenChange={(v) => {
         if (isSubmitting) return
         setOpen(v)
-        if (v) setName(brand.name)
+        if (v) {
+          setName(brand.name)
+          setLogoUrl(brand.logo_url ?? "")
+        }
       }}
     >
       <DialogTrigger asChild>
@@ -260,9 +318,33 @@ function EditBrandDialog({
           <DialogTitle>Editar marca</DialogTitle>
         </DialogHeader>
 
-        <div className="space-y-2">
-          <Label>Nome</Label>
-          <Input value={name} onChange={(e) => setName(e.target.value)} />
+        <div className="space-y-4">
+          <div className="space-y-2">
+            <Label>Nome</Label>
+            <Input value={name} onChange={(e) => setName(e.target.value)} />
+          </div>
+
+          {!isGenericBrand(brand.slug) && (
+            <div className="space-y-2">
+              <Label>URL do Logo (opcional)</Label>
+              <Input
+                value={logoUrl}
+                onChange={(e) => setLogoUrl(e.target.value)}
+                placeholder="https://exemplo.com/logo.png"
+                type="url"
+              />
+              {logoUrl.trim() && (
+                <img
+                  src={logoUrl.trim()}
+                  alt="Preview"
+                  className="h-12 w-12 rounded object-contain border bg-white"
+                  onError={(e) => {
+                    ;(e.currentTarget as HTMLImageElement).style.display = "none"
+                  }}
+                />
+              )}
+            </div>
+          )}
         </div>
 
         <DialogFooter>

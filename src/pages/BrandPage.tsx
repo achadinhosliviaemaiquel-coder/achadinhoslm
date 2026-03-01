@@ -29,7 +29,17 @@ export default function BrandPage() {
     },
   })
 
-  const brandName = brandSlug ? brandSlug.replace(/-/g, " ") : "Marca"
+  const { data: brandData } = useQuery({
+    queryKey: ["brand-meta", brandSlug],
+    enabled: !!brandSlug,
+    queryFn: async () => {
+      const supabase = getSupabase()
+      const { data } = await supabase.from("brands").select("name").eq("slug", brandSlug).maybeSingle()
+      return data ?? null
+    },
+  })
+
+  const brandName = brandData?.name ?? (brandSlug ? brandSlug.replace(/-/g, " ") : "Marca")
 
   return (
     <Layout
@@ -37,6 +47,11 @@ export default function BrandPage() {
         { name: "Home", url: "/" },
         { name: brandName, url: `/brand/${brandSlug}` },
       ]}
+      seo={{
+        title: `${brandName} | Produtos em Promoção`,
+        description: `Confira os melhores produtos da marca ${brandName} com menor preço na Shopee, Amazon e Mercado Livre.`,
+        canonical: `/brand/${brandSlug}`,
+      }}
     >
       <div className="space-y-6">
         <Button

@@ -74,7 +74,7 @@ export default function SearchPage() {
   }
 
   return (
-    <Layout>
+    <Layout seo={{ title: "Busca | Achadinhos LM", noindex: true, canonical: "/search" }}>
       <div className="space-y-6">
         {/* Barra de busca (mobile-first) */}
         <form onSubmit={handleSubmit} className="relative">

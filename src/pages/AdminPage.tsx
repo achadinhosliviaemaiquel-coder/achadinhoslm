@@ -1,4 +1,5 @@
 import AdminBrandsPanel from "@/components/admin/AdminBrandsPanel"
+import AdminSubcategoriesPanel from "@/components/admin/AdminSubcategoriesPanel"
 import ClicksDashboard from "@/components/admin/ClicksDashboard"
 import { useEffect, useMemo, useState } from "react"
 import { Link, Navigate, useNavigate, useSearchParams } from "react-router-dom"
@@ -19,14 +20,15 @@ import {
   Globe,
   MousePointerClick,
   Tag,
+  Layers,
 } from "lucide-react"
 import { CATEGORY_LABELS, type ProductCategory } from "@/types/product"
 
-type AdminTab = "list" | "add" | "brands" | "clicks"
+type AdminTab = "list" | "add" | "brands" | "subcategorias" | "clicks"
 type Traffic = "all" | "organic" | "ads"
 
 function isAdminTab(v: string | null): v is AdminTab {
-  return v === "list" || v === "add" || v === "brands" || v === "clicks"
+  return v === "list" || v === "add" || v === "brands" || v === "subcategorias" || v === "clicks"
 }
 
 function isTraffic(v: string | null): v is Traffic {
@@ -179,7 +181,7 @@ export default function AdminPage() {
 
         {/* TABS */}
         <Tabs value={activeTab} onValueChange={(v) => setTab(v as AdminTab)}>
-          <TabsList className="grid w-full grid-cols-4">
+          <TabsList className="grid w-full grid-cols-5">
             <TabsTrigger value="list" className="flex items-center gap-2">
               <List className="h-4 w-4" /> Produtos
             </TabsTrigger>
@@ -190,6 +192,10 @@ export default function AdminPage() {
 
             <TabsTrigger value="brands" className="flex items-center gap-2">
               <Tag className="h-4 w-4" /> Marcas
+            </TabsTrigger>
+
+            <TabsTrigger value="subcategorias" className="flex items-center gap-2">
+              <Layers className="h-4 w-4" /> Subcats
             </TabsTrigger>
 
             <TabsTrigger value="clicks" className="flex items-center gap-2">
@@ -235,6 +241,11 @@ export default function AdminPage() {
           {/* BRANDS */}
           <TabsContent value="brands" className="mt-6">
             <AdminBrandsPanel />
+          </TabsContent>
+
+          {/* SUBCATEGORIAS */}
+          <TabsContent value="subcategorias" className="mt-6">
+            <AdminSubcategoriesPanel />
           </TabsContent>
 
           {/* CLICKS / MÉTRICAS */}

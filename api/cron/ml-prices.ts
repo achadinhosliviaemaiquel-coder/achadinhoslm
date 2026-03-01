@@ -10,6 +10,7 @@ type StoreOffer = {
   url: string | null;
   is_active: boolean;
   current_price_cents?: number | null;
+  price_override_brl?: number | null;
 };
 
 type JobCounters = {
@@ -210,7 +211,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     const { data: offers, error } = await supabase
       .from("store_offers")
-      .select("id, product_id, platform, external_id, url, is_active, current_price_cents")
+      .select("id, product_id, platform, external_id, url, is_active, current_price_cents, price_override_brl")
       .eq("platform", PLATFORM_LABEL)
       .eq("is_active", true)
       .order("id", { ascending: true })
@@ -239,9 +240,16 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       }
 
       const mlb = offer.external_id!;
-      log(`Buscando preço para ${mlb}...`);
 
-      const price = await getPriceFromML(mlb, accessToken);
+      // Usa override manual se definido (não chama a API)
+      let price: number | null;
+      if (offer.price_override_brl != null && Number.isFinite(Number(offer.price_override_brl))) {
+        price = Number(offer.price_override_brl);
+        log(`Override manual para ${mlb}: R$ ${price}`);
+      } else {
+        log(`Buscando preço para ${mlb}...`);
+        price = await getPriceFromML(mlb, accessToken);
+      }
       const nowIso = new Date().toISOString();
 
       if (price === null) {

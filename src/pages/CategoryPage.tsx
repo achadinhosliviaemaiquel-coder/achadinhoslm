@@ -8,6 +8,7 @@ import { ProductCard } from "@/components/ProductCard"
 import { BrandCard } from "@/components/BrandCard"
 import { List, Grid2x2, ArrowLeft } from "lucide-react"
 import { useState, useMemo } from "react"
+import { Helmet } from "react-helmet-async"
 import { CATEGORY_LABELS, type ProductCategory } from "@/types/product"
 
 export default function CategoryPage() {
@@ -192,9 +193,10 @@ export default function CategoryPage() {
         noindex: hasSubFilter,
       }}
     >
-      {/* ✅ JSON-LD sem Helmet (SPA ok) */}
-      <script type="application/ld+json">{JSON.stringify(itemListSchema)}</script>
-      <script type="application/ld+json">{JSON.stringify(faqSchema)}</script>
+      <Helmet>
+        <script type="application/ld+json">{JSON.stringify(itemListSchema)}</script>
+        <script type="application/ld+json">{JSON.stringify(faqSchema)}</script>
+      </Helmet>
 
       <div className="space-y-6">
         {/* HEADER */}
@@ -225,7 +227,7 @@ export default function CategoryPage() {
                   key={brand.slug}
                   category={safeCategory}
                   name={brand.name}
-                  logo={`/brands/${brand.slug}.png`}
+                  logo={brand.logo_url || `/brands/${brand.slug}.png`}
                   slug={brand.slug}
                   count={brand.product_count}
                 />
