@@ -1,4 +1,4 @@
-// api/cron/ml-prices.ts - API oficial ML (sem cookie)
+// api/cron/ml-prices.ts - API oficial ML + scraping com cookie de sessão
 import type { VercelRequest, VercelResponse } from "@vercel/node";
 import { createClient } from "@supabase/supabase-js";
 
@@ -33,6 +33,12 @@ const ML_CLIENT_SECRET = process.env.ML_CLIENT_SECRET!;
 const DEFAULT_LIMIT = Number(process.env.ML_PRICE_BATCH_SIZE || "10");
 const MAX_CONCURRENCY = Number(process.env.ML_PRICE_CONCURRENCY || "1");
 const MAX_RUN_MS = Number(process.env.ML_PRICE_MAX_RUN_MS || "45000");
+
+// Cookie de sessão do browser ML (expira ~7 dias — atualizar manualmente na env var)
+// Exemplo: ML_COOKIE="MLISST=...; _d2id=...; _session_id=..."
+const ML_COOKIE = process.env.ML_COOKIE ?? "";
+// x-csrf-token da sessão (normalmente não necessário para GET, mas incluído como fallback)
+const ML_CSRF_TOKEN = process.env.ML_CSRF_TOKEN ?? "";
 
 function utcDateOnly(d = new Date()): string {
   const y = d.getUTCFullYear();
@@ -135,37 +141,56 @@ async function getMLAppToken(
   }
 }
 
-const ML_BROWSER_HEADERS = {
+// Headers para chamadas à API REST do ML (json)
+const ML_API_HEADERS: Record<string, string> = {
   "User-Agent":
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
   Accept: "application/json, text/plain, */*",
   "Accept-Language": "pt-BR,pt;q=0.9,en;q=0.8",
 };
 
+// Headers para scraping de páginas HTML do ML (simula browser com sessão)
+function mlPageHeaders(): Record<string, string> {
+  const h: Record<string, string> = {
+    "User-Agent":
+      "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
+    Accept: "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+    "Accept-Language": "pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7",
+    "Cache-Control": "max-age=0",
+    "Sec-Fetch-Dest": "document",
+    "Sec-Fetch-Mode": "navigate",
+    "Sec-Fetch-Site": "none",
+    "Upgrade-Insecure-Requests": "1",
+  };
+  if (ML_COOKIE) h["Cookie"] = ML_COOKIE;
+  if (ML_CSRF_TOKEN) h["X-Csrf-Token"] = ML_CSRF_TOKEN;
+  return h;
+}
+
 /**
- * Faz fetch ao ML:
- * 1. Sem auth com cabeçalhos de browser (endpoints públicos)
- * 2. Com token OAuth do usuário + cabeçalhos de browser (fallback)
+ * Faz fetch à API REST do ML:
+ * 1. Sem auth (endpoints públicos)
+ * 2. Com token OAuth do usuário (fallback)
  */
 async function mlFetch(url: string, userToken: string): Promise<Response> {
-  const pubRes = await fetch(url, { headers: ML_BROWSER_HEADERS });
+  const pubRes = await fetch(url, { headers: ML_API_HEADERS });
   if (pubRes.ok || (pubRes.status !== 401 && pubRes.status !== 403)) {
     return pubRes;
   }
   return fetch(url, {
-    headers: { ...ML_BROWSER_HEADERS, Authorization: `Bearer ${userToken}` },
+    headers: { ...ML_API_HEADERS, Authorization: `Bearer ${userToken}` },
   });
 }
 
 /**
  * Constrói URL canônica do ML a partir do ID.
- * Catalog IDs (MLB + ≤10 dígitos): /p/{id}
- * Listing IDs (MLB + >10 dígitos ou ml_item_id): produto.mercadolivre.com.br/MLB-{digits}
+ * Catalog IDs (MLB + ≤9 dígitos): mercadolivre.com.br/p/{id}
+ * Listing IDs (MLB + ≥10 dígitos): produto.mercadolivre.com.br/MLB-{digits}
  */
 function mlCanonicalUrl(id: string): string {
   const digits = id.replace(/^MLBU?/i, "");
-  // IDs de catálogo são mais curtos; listings têm 10+ dígitos
-  if (digits.length <= 10) {
+  // Catalog IDs têm ≤9 dígitos; listing IDs têm 10 dígitos
+  if (digits.length < 10) {
     return `https://www.mercadolivre.com.br/p/${id.toUpperCase()}`;
   }
   return `https://produto.mercadolivre.com.br/MLB-${digits}`;
@@ -181,17 +206,15 @@ async function getPriceFromPageHtml(
   log?: (s: string) => void,
 ): Promise<number | null> {
   try {
-    const res = await fetch(url, { headers: ML_BROWSER_HEADERS, redirect: "follow" });
+    const res = await fetch(url, { headers: mlPageHeaders(), redirect: "follow" });
     if (!res.ok) {
       log?.(`page HTML status=${res.status} [${label}]`);
       return null;
     }
     const html = await res.text();
 
-    // diagnóstico: log dos primeiros 300 chars apenas na primeira chamada
-    if (html.length < 500) {
-      log?.(`page HTML curto (${html.length} chars) [${label}]: ${html.slice(0, 200)}`);
-    }
+    // diagnóstico: tamanho + início do HTML para entender o que ML retorna
+    log?.(`page HTML ${html.length}b [${label}]: ${html.slice(0, 200).replace(/\s+/g, " ")}`);
 
     // 1. JSON-LD (schema.org Product)
     // ML usa AggregateOffer.lowPrice em páginas de catálogo e Offer.price em listings
