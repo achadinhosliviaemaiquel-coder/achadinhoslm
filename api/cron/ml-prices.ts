@@ -254,46 +254,40 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
       if (price === null) {
         job.priceNotFound += 1;
-        await supabase
+        const { error: failErr } = await supabase
           .from("store_offers")
-          .update({ last_scrape_at: nowIso, last_scrape_status: "price_not_found", updated_at: nowIso })
+          .update({ last_scrape_status: "price_not_found" })
           .eq("id", offer.id);
+        if (failErr) log(`WARN store_offers fail-status ${mlb}: ${failErr.message}`);
         return;
       }
 
-      // Salva snapshot de preço (offer_id é o ID numérico da store_offer)
-      await supabase.from("offer_last_price").upsert(
-        {
-          offer_id: offer.id,
-          price,
-          currency_id: "BRL",
-          is_available: true,
-          verified_at: nowIso,
-          verified_date: utcDateOnly(),
-          updated_at: nowIso,
-          last_checked_at: nowIso,
-        },
-        { onConflict: "offer_id" },
-      );
+      // Salva snapshot de preço (offer_id = ID numérico inteiro de store_offers)
+      const { error: upsertErr } = await supabase
+        .from("offer_last_price")
+        .upsert(
+          { offer_id: offer.id, price, verified_date: utcDateOnly() },
+          { onConflict: "offer_id" },
+        );
+      if (upsertErr) log(`WARN offer_last_price ${mlb}: ${upsertErr.message}`);
 
       // Atualiza store_offers com preço em centavos
-      await supabase
+      const { error: soErr } = await supabase
         .from("store_offers")
         .update({
           current_price_cents: Math.round(price * 100),
           current_currency: "BRL",
-          current_price_updated_at: nowIso,
-          last_scrape_at: nowIso,
           last_scrape_status: "ok",
-          updated_at: nowIso,
         })
         .eq("id", offer.id);
+      if (soErr) log(`WARN store_offers update ${mlb}: ${soErr.message}`);
 
       // Atualiza preço direto no produto
-      await supabase
+      const { error: pErr } = await supabase
         .from("products")
-        .update({ mercadolivre_price: price, updated_at: nowIso })
+        .update({ mercadolivre_price: price })
         .eq("id", offer.product_id);
+      if (pErr) log(`WARN products update ${offer.product_id}: ${pErr.message}`);
 
       job.updated += 1;
       log(`OK ${mlb} → R$ ${price}`);
