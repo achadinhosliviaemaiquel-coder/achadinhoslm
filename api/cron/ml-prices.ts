@@ -184,16 +184,26 @@ async function mlFetch(url: string, userToken: string): Promise<Response> {
 
 /**
  * Constrói URL canônica do ML a partir do ID.
- * Catalog IDs (MLB + ≤9 dígitos): mercadolivre.com.br/p/{id}
- * Listing IDs (MLB + ≥10 dígitos): produto.mercadolivre.com.br/MLB-{digits}
+ *
+ * MLB  + ≤9 dígitos  → mercadolivre.com.br/p/{id}      (catálogo BR)
+ * MLB  + ≥10 dígitos → produto.mercadolivre.com.br/MLB-{digits} (listing)
+ * MLBU + qualquer    → mercadolivre.com.br/p/{id}      (catálogo outra região)
+ *   MLBU pode ter 10 dígitos e ainda ser catálogo — nunca usar como listing
+ *
+ * Bug antigo: regex /^MLBU?/ removia só "MLB" de "MLBU3419246078",
+ * gerando "U3419246078" (10 chars) → URL de listing errada.
  */
 function mlCanonicalUrl(id: string): string {
-  const digits = id.replace(/^MLBU?/i, "");
-  // Catalog IDs têm ≤9 dígitos; listing IDs têm 10 dígitos
-  if (digits.length < 10) {
-    return `https://www.mercadolivre.com.br/p/${id.toUpperCase()}`;
+  const upper = id.toUpperCase();
+  // MLBU: sempre catálogo /p/ (catalogo de outra região, não listing de BR)
+  if (upper.startsWith("MLBU")) {
+    return `https://www.mercadolivre.com.br/p/${upper}`;
   }
-  return `https://produto.mercadolivre.com.br/MLB-${digits}`;
+  // MLB: extrair dígitos e decidir por tamanho
+  const digits = upper.replace(/^[A-Z]+/, "");
+  return digits.length < 10
+    ? `https://www.mercadolivre.com.br/p/${upper}`
+    : `https://produto.mercadolivre.com.br/MLB-${digits}`;
 }
 
 /**
