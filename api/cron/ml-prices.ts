@@ -386,15 +386,19 @@ async function getPriceFromPageHtml(
  * Busca preço do ML.
  * Estratégias em ordem:
  *  1. API /items/{ml_item_id}
- *  2. Scraping página canônica construída do ml_item_id (listing)
- *  3. Scraping página canônica construída do catalogId (/p/)
+ *  2. Scraping da página de catálogo (/p/MLBxxx) — HTML completo ~1MB com JSON-LD ✓
+ *  3. Scraping da página de listing (ml_item_id → produto.mercadolivre.com.br) — fallback
  *  4. API /sites/MLB/search?catalog_product_id=
+ *
+ * Nota: páginas de listing retornam ~265KB sem dados de preço (provavelmente SSR sem
+ * hidratação de dados sensíveis). Páginas de catálogo /p/ retornam HTML completo com JSON-LD.
+ * Por isso o catálogo é tentado PRIMEIRO, mesmo quando ml_item_id está disponível.
  */
 async function getPriceFromML(
   itemId: string,
   catalogId: string,
   userToken: string,
-  _offerUrl: string | null,  // mantido para compatibilidade, não mais usado diretamente
+  _offerUrl: string | null,
   log?: (s: string) => void,
 ): Promise<number | null> {
   // 1. API /items/ com token OAuth
@@ -411,17 +415,19 @@ async function getPriceFromML(
     log?.(`items erro para ${itemId}: ${e?.message}`);
   }
 
-  // 2. Scraping da página de listing (ml_item_id → produto.mercadolivre.com.br/MLB-xxx)
+  // 2. Scraping da página de catálogo (/p/MLBxxx) — PRIMEIRO
+  // Páginas de catálogo retornam HTML completo (~1MB) com JSON-LD e __PRELOADED_STATE__
+  const catalogUrl = mlCanonicalUrl(catalogId);
+  const pCatalog = await getPriceFromPageHtml(catalogUrl, catalogId, log);
+  if (pCatalog !== null) return pCatalog;
+
+  // 3. Scraping da página de listing (ml_item_id → produto.mercadolivre.com.br/MLB-xxx)
+  // Fallback: tende a retornar ~265KB sem dados de preço, mas tentamos mesmo assim
   if (itemId !== catalogId) {
     const listingUrl = mlCanonicalUrl(itemId);
-    const p = await getPriceFromPageHtml(listingUrl, itemId, log);
-    if (p !== null) return p;
+    const pListing = await getPriceFromPageHtml(listingUrl, itemId, log);
+    if (pListing !== null) return pListing;
   }
-
-  // 3. Scraping da página de catálogo (/p/MLBxxx)
-  const catalogUrl = mlCanonicalUrl(catalogId);
-  const p2 = await getPriceFromPageHtml(catalogUrl, catalogId, log);
-  if (p2 !== null) return p2;
 
   // 4. API search por catalog_product_id (fallback)
   try {
