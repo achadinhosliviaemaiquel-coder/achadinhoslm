@@ -158,66 +158,94 @@ async function mlFetch(url: string, userToken: string): Promise<Response> {
 }
 
 /**
+ * Constrói URL canônica do ML a partir do ID.
+ * Catalog IDs (MLB + ≤10 dígitos): /p/{id}
+ * Listing IDs (MLB + >10 dígitos ou ml_item_id): produto.mercadolivre.com.br/MLB-{digits}
+ */
+function mlCanonicalUrl(id: string): string {
+  const digits = id.replace(/^MLBU?/i, "");
+  // IDs de catálogo são mais curtos; listings têm 10+ dígitos
+  if (digits.length <= 10) {
+    return `https://www.mercadolivre.com.br/p/${id.toUpperCase()}`;
+  }
+  return `https://produto.mercadolivre.com.br/MLB-${digits}`;
+}
+
+/**
  * Extrai preço do HTML da página do produto ML.
- * Tenta JSON-LD (schema.org), Open Graph price meta e padrão preloadedState.
+ * ML usa AggregateOffer.lowPrice no JSON-LD para páginas de catálogo (/p/).
  */
 async function getPriceFromPageHtml(
   url: string,
+  label: string,
   log?: (s: string) => void,
 ): Promise<number | null> {
   try {
     const res = await fetch(url, { headers: ML_BROWSER_HEADERS, redirect: "follow" });
     if (!res.ok) {
-      log?.(`page HTML status=${res.status} para ${url}`);
+      log?.(`page HTML status=${res.status} [${label}]`);
       return null;
     }
     const html = await res.text();
 
-    // 1. JSON-LD (schema.org Product → offers.price)
+    // diagnóstico: log dos primeiros 300 chars apenas na primeira chamada
+    if (html.length < 500) {
+      log?.(`page HTML curto (${html.length} chars) [${label}]: ${html.slice(0, 200)}`);
+    }
+
+    // 1. JSON-LD (schema.org Product)
+    // ML usa AggregateOffer.lowPrice em páginas de catálogo e Offer.price em listings
     for (const m of html.matchAll(/<script[^>]+type="application\/ld\+json"[^>]*>([\s\S]*?)<\/script>/gi)) {
       try {
         const data = JSON.parse(m[1].trim());
         const nodes = Array.isArray(data) ? data : [data];
         for (const node of nodes) {
-          const offerNode = node?.offers ?? node?.["@graph"]?.find?.((n: any) => n?.["@type"] === "Offer");
-          const raw = offerNode?.price ?? (Array.isArray(offerNode) ? offerNode[0]?.price : null);
-          const p = typeof raw === "string" ? parseFloat(raw.replace(",", ".")) : Number(raw);
-          if (isFinite(p) && p > 0) {
-            log?.(`JSON-LD preço R$ ${p} de ${url}`);
-            return p;
+          // Suporte a @graph
+          const graph: any[] = node?.["@graph"] ?? [node];
+          for (const item of graph) {
+            if (!item?.offers) continue;
+            const offer = Array.isArray(item.offers) ? item.offers[0] : item.offers;
+            // Offer.price OU AggregateOffer.lowPrice
+            const raw = offer?.price ?? offer?.lowPrice;
+            const p = typeof raw === "string" ? parseFloat(raw.replace(",", ".")) : Number(raw);
+            if (isFinite(p) && p > 0) {
+              log?.(`JSON-LD R$ ${p} [${label}]`);
+              return p;
+            }
           }
         }
       } catch {}
     }
 
     // 2. Open Graph / itemprop meta
-    const ogMatch =
+    const ogRaw =
       html.match(/<meta[^>]+property="product:price:amount"[^>]+content="([\d.,]+)"/i)?.[1] ??
       html.match(/<meta[^>]+content="([\d.,]+)"[^>]+property="product:price:amount"/i)?.[1] ??
       html.match(/<meta[^>]+itemprop="price"[^>]+content="([\d.,]+)"/i)?.[1] ??
       html.match(/<meta[^>]+content="([\d.,]+)"[^>]+itemprop="price"/i)?.[1];
-    if (ogMatch) {
-      const p = parseFloat(ogMatch.replace(",", "."));
+    if (ogRaw) {
+      const p = parseFloat(ogRaw.replace(",", "."));
       if (isFinite(p) && p > 0) {
-        log?.(`OG/itemprop preço R$ ${p} de ${url}`);
+        log?.(`OG/itemprop R$ ${p} [${label}]`);
         return p;
       }
     }
 
-    // 3. window.__PRELOADED_STATE__ price pattern (ML React SPA)
-    const preloadMatch = html.match(/"price"\s*:\s*([\d.]+)/);
-    if (preloadMatch) {
-      const p = parseFloat(preloadMatch[1]);
-      if (isFinite(p) && p > 0) {
-        log?.(`preloadedState preço R$ ${p} de ${url}`);
+    // 3. JSON embutido no HTML (React initial state) — procura padrão "price":39.90
+    // Exclui preços 0 e muito altos (provavelmente datas/ids)
+    const priceMatches = [...html.matchAll(/"(?:price|lowPrice)"\s*:\s*([\d]+(?:\.\d{1,2})?)/g)];
+    for (const pm of priceMatches) {
+      const p = parseFloat(pm[1]);
+      if (isFinite(p) && p >= 1 && p < 100000) {
+        log?.(`inline JSON R$ ${p} [${label}]`);
         return p;
       }
     }
 
-    log?.(`page sem preço para ${url}`);
+    log?.(`page sem preço [${label}]`);
     return null;
   } catch (e: any) {
-    log?.(`page HTML erro: ${e?.message}`);
+    log?.(`page HTML erro [${label}]: ${e?.message}`);
     return null;
   }
 }
@@ -225,19 +253,19 @@ async function getPriceFromPageHtml(
 /**
  * Busca preço do ML.
  * Estratégias em ordem:
- *  1. API /items/{ml_item_id} — endpoint de listing
- *  2. Scraping HTML da página do produto (store_offers.url)
- *  3. API /sites/MLB/search?catalog_product_id=
- *  4. Permalink da /products/{catalogId} → scraping HTML
+ *  1. API /items/{ml_item_id}
+ *  2. Scraping página canônica construída do ml_item_id (listing)
+ *  3. Scraping página canônica construída do catalogId (/p/)
+ *  4. API /sites/MLB/search?catalog_product_id=
  */
 async function getPriceFromML(
   itemId: string,
   catalogId: string,
   userToken: string,
-  offerUrl: string | null,
+  _offerUrl: string | null,  // mantido para compatibilidade, não mais usado diretamente
   log?: (s: string) => void,
 ): Promise<number | null> {
-  // 1. API /items/ com token OAuth (endpoint de listing — funciona quando não bloqueado)
+  // 1. API /items/ com token OAuth
   try {
     const res = await mlFetch(`https://api.mercadolibre.com/items/${itemId}`, userToken);
     if (res.ok) {
@@ -251,13 +279,19 @@ async function getPriceFromML(
     log?.(`items erro para ${itemId}: ${e?.message}`);
   }
 
-  // 2. Scraping HTML da URL já resolvida (store_offers.url)
-  if (offerUrl) {
-    const price = await getPriceFromPageHtml(offerUrl, log);
-    if (price !== null) return price;
+  // 2. Scraping da página de listing (ml_item_id → produto.mercadolivre.com.br/MLB-xxx)
+  if (itemId !== catalogId) {
+    const listingUrl = mlCanonicalUrl(itemId);
+    const p = await getPriceFromPageHtml(listingUrl, itemId, log);
+    if (p !== null) return p;
   }
 
-  // 3. API search por catalog_product_id
+  // 3. Scraping da página de catálogo (/p/MLBxxx)
+  const catalogUrl = mlCanonicalUrl(catalogId);
+  const p2 = await getPriceFromPageHtml(catalogUrl, catalogId, log);
+  if (p2 !== null) return p2;
+
+  // 4. API search por catalog_product_id (fallback)
   try {
     const res = await mlFetch(
       `https://api.mercadolibre.com/sites/MLB/search?catalog_product_id=${catalogId}&limit=1`,
@@ -276,23 +310,6 @@ async function getPriceFromML(
     }
   } catch (e: any) {
     log?.(`catalog search erro: ${e?.message}`);
-  }
-
-  // 4. /products/ → permalink → scraping HTML (para produtos sem url resolvida)
-  if (!offerUrl) {
-    try {
-      const res = await mlFetch(`https://api.mercadolibre.com/products/${catalogId}`, userToken);
-      if (res.ok) {
-        const data = await res.json();
-        const permalink: string | undefined = data.permalink;
-        if (permalink) {
-          const price = await getPriceFromPageHtml(permalink, log);
-          if (price !== null) return price;
-        }
-      }
-    } catch (e: any) {
-      log?.(`/products/ permalink erro: ${e?.message}`);
-    }
   }
 
   return null;
