@@ -7,6 +7,7 @@ type StoreOffer = {
   product_id: string;
   platform: string;
   external_id: string | null;
+  ml_item_id: string | null;
   url: string | null;
   is_active: boolean;
   current_price_cents?: number | null;
@@ -99,46 +100,52 @@ async function runPool<T>(
   await Promise.all(runners);
 }
 
+/**
+ * Busca preço do ML.
+ * @param itemId   ID a usar no endpoint /items/ (pode ser ml_item_id ou external_id)
+ * @param catalogId  ID do catálogo (external_id) para fallback de busca por catalog_product_id
+ */
 async function getPriceFromML(
-  mlb: string,
+  itemId: string,
+  catalogId: string,
   accessToken: string,
   log?: (s: string) => void,
 ): Promise<number | null> {
   const headers = { Authorization: `Bearer ${accessToken}` };
 
-  // 1. Tenta endpoint padrão (funciona para listings individuais)
+  // 1. Tenta endpoint /items/ (funciona para listings individuais; ml_item_id já resolvido)
   try {
-    const res = await fetch(`https://api.mercadolibre.com/items/${mlb}`, { headers });
+    const res = await fetch(`https://api.mercadolibre.com/items/${itemId}`, { headers });
     if (res.ok) {
       const item = await res.json();
       if (item.price && item.price > 0) return item.price;
-      log?.(`items OK mas price=0 para ${mlb}`);
+      log?.(`items OK mas price=0 para ${itemId}`);
     } else {
-      log?.(`items status=${res.status} para ${mlb} — tentando catalog search`);
+      log?.(`items status=${res.status} para ${itemId} — tentando catalog search`);
     }
   } catch (e: any) {
-    log?.(`items erro para ${mlb}: ${e?.message}`);
+    log?.(`items erro para ${itemId}: ${e?.message}`);
   }
 
-  // 2. Fallback: busca por catalog_product_id (para produtos /p/MLB... do catálogo)
+  // 2. Fallback: busca por catalog_product_id (para produtos /p/MLB... sem ml_item_id resolvido)
   try {
     const res = await fetch(
-      `https://api.mercadolibre.com/sites/MLB/search?catalog_product_id=${mlb}&limit=1`,
+      `https://api.mercadolibre.com/sites/MLB/search?catalog_product_id=${catalogId}&limit=1`,
       { headers },
     );
     if (res.ok) {
       const data = await res.json();
       const first = (data.results ?? [])[0];
       if (first?.price > 0) {
-        log?.(`catalog search ${mlb} → R$ ${first.price}`);
+        log?.(`catalog search ${catalogId} → R$ ${first.price}`);
         return first.price;
       }
-      log?.(`catalog search ${mlb} sem resultados`);
+      log?.(`catalog search ${catalogId} sem resultados`);
     } else {
-      log?.(`catalog search status=${res.status} para ${mlb}`);
+      log?.(`catalog search status=${res.status} para ${catalogId}`);
     }
   } catch (e: any) {
-    log?.(`catalog search erro para ${mlb}: ${e?.message}`);
+    log?.(`catalog search erro para ${catalogId}: ${e?.message}`);
   }
 
   return null;
@@ -243,7 +250,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
 
     const { data: offers, error } = await supabase
       .from("store_offers")
-      .select("id, product_id, platform, external_id, url, is_active, current_price_cents, price_override_brl")
+      .select("id, product_id, platform, external_id, ml_item_id, url, is_active, current_price_cents, price_override_brl")
       .eq("platform", PLATFORM_LABEL)
       .eq("is_active", true)
       .order("id", { ascending: true })
@@ -272,6 +279,9 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       }
 
       const mlb = offer.external_id!;
+      // Se ml_item_id estiver resolvido (produto de catálogo já processado pelo ml-resolve-sec),
+      // usa-o como ID do endpoint /items/ — é o listing real, não o ID de catálogo
+      const effectiveItemId = offer.ml_item_id || mlb;
 
       // Usa override manual se definido (não chama a API)
       let price: number | null;
@@ -279,10 +289,10 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         price = Number(offer.price_override_brl);
         log(`Override manual para ${mlb}: R$ ${price}`);
       } else {
-        log(`Buscando preço para ${mlb}...`);
-        price = await getPriceFromML(mlb, accessToken, log);
+        const label = effectiveItemId !== mlb ? `${mlb} (item=${effectiveItemId})` : mlb;
+        log(`Buscando preço para ${label}...`);
+        price = await getPriceFromML(effectiveItemId, mlb, accessToken, log);
       }
-      const nowIso = new Date().toISOString();
 
       if (price === null) {
         job.priceNotFound += 1;
