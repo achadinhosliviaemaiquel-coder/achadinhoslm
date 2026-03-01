@@ -135,18 +135,26 @@ async function getMLAppToken(
   }
 }
 
+const ML_BROWSER_HEADERS = {
+  "User-Agent":
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+  Accept: "application/json, text/plain, */*",
+  "Accept-Language": "pt-BR,pt;q=0.9,en;q=0.8",
+};
+
 /**
- * Faz fetch ao ML tentando sem auth primeiro (endpoint público).
- * Se retornar 401/403, tenta novamente com o token de usuário como fallback.
+ * Faz fetch ao ML:
+ * 1. Sem auth com cabeçalhos de browser (endpoints públicos)
+ * 2. Com token OAuth do usuário + cabeçalhos de browser (fallback)
  */
 async function mlFetch(url: string, userToken: string): Promise<Response> {
-  // Primeira tentativa: sem auth (endpoints públicos do ML não precisam de token)
-  const pubRes = await fetch(url);
+  const pubRes = await fetch(url, { headers: ML_BROWSER_HEADERS });
   if (pubRes.ok || (pubRes.status !== 401 && pubRes.status !== 403)) {
     return pubRes;
   }
-  // Fallback: user OAuth token
-  return fetch(url, { headers: { Authorization: `Bearer ${userToken}` } });
+  return fetch(url, {
+    headers: { ...ML_BROWSER_HEADERS, Authorization: `Bearer ${userToken}` },
+  });
 }
 
 /**
@@ -175,7 +183,7 @@ async function getPriceFromML(
     log?.(`items erro para ${itemId}: ${e?.message}`);
   }
 
-  // 2. Fallback: busca por catalog_product_id (para produtos /p/MLB... sem ml_item_id resolvido)
+  // 2. Fallback: busca por catalog_product_id via search
   try {
     const res = await mlFetch(
       `https://api.mercadolibre.com/sites/MLB/search?catalog_product_id=${catalogId}&limit=1`,
@@ -194,6 +202,30 @@ async function getPriceFromML(
     }
   } catch (e: any) {
     log?.(`catalog search erro para ${catalogId}: ${e?.message}`);
+  }
+
+  // 3. Fallback: endpoint /products/ (catálogo ML — retorna buy_box_winner com preço)
+  try {
+    const res = await mlFetch(
+      `https://api.mercadolibre.com/products/${catalogId}`,
+      userToken,
+    );
+    if (res.ok) {
+      const data = await res.json();
+      const price =
+        data.buy_box_winner?.price ??
+        data.settings?.price ??
+        null;
+      if (price && price > 0) {
+        log?.(`/products/${catalogId} → R$ ${price}`);
+        return price;
+      }
+      log?.(`/products/${catalogId} OK mas sem preço`);
+    } else {
+      log?.(`/products/${catalogId} status=${res.status}`);
+    }
+  } catch (e: any) {
+    log?.(`/products/${catalogId} erro: ${e?.message}`);
   }
 
   return null;
