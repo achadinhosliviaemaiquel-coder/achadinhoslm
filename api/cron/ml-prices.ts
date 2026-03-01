@@ -27,6 +27,8 @@ const SUPABASE_URL = process.env.SUPABASE_URL!;
 const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY!;
 const CRON_SECRET = process.env.CRON_SECRET!;
 const PLATFORM_LABEL = process.env.ML_PLATFORM_LABEL || "mercadolivre";
+const ML_CLIENT_ID = process.env.ML_CLIENT_ID!;
+const ML_CLIENT_SECRET = process.env.ML_CLIENT_SECRET!;
 
 const DEFAULT_LIMIT = Number(process.env.ML_PRICE_BATCH_SIZE || "10");
 const MAX_CONCURRENCY = Number(process.env.ML_PRICE_CONCURRENCY || "1");
@@ -98,6 +100,30 @@ async function runPool<T>(
       }
     });
   await Promise.all(runners);
+}
+
+/**
+ * Obtém um token de aplicação via client_credentials.
+ * Usado para acessar recursos públicos do ML (itens, busca), sem precisar
+ * de autorização do usuário. Diferente do token OAuth de usuário.
+ */
+async function getMLAppToken(clientId: string, clientSecret: string): Promise<string | null> {
+  try {
+    const res = await fetch("https://api.mercadolibre.com/oauth/token", {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({
+        grant_type: "client_credentials",
+        client_id: clientId,
+        client_secret: clientSecret,
+      }).toString(),
+    });
+    if (!res.ok) return null;
+    const data = await res.json();
+    return (data.access_token as string) ?? null;
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -246,18 +272,26 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       log("Token renovado com sucesso");
     }
 
-    // Verifica se o token realmente funciona antes de processar as ofertas
+    // Verifica se o token de usuário funciona (health check)
     const tokenCheckRes = await fetch("https://api.mercadolibre.com/users/me", {
       headers: { Authorization: `Bearer ${accessToken}` },
     });
     if (!tokenCheckRes.ok) {
       const body = await tokenCheckRes.text().catch(() => "");
-      throw new Error(
-        `Token ML inválido (HTTP ${tokenCheckRes.status}). Acesse /api/ml/oauth/start para re-autorizar. ${body.slice(0, 200)}`,
-      );
+      log(`WARN token de usuário inválido (HTTP ${tokenCheckRes.status}): ${body.slice(0, 200)}`);
+    } else {
+      log("Token de usuário OK ✓");
     }
 
-    log(`Token válido ✓ - offset=${offset} limit=${limit}`);
+    // Obtém token de aplicação (client_credentials) para acessar itens/catálogo públicos.
+    // O token de usuário (OAuth) pode não ter permissão para endpoints públicos do marketplace.
+    const appToken = await getMLAppToken(ML_CLIENT_ID, ML_CLIENT_SECRET);
+    if (!appToken) {
+      throw new Error(
+        "Falha ao obter app token (client_credentials). Verifique ML_CLIENT_ID e ML_CLIENT_SECRET.",
+      );
+    }
+    log(`App token obtido ✓ - offset=${offset} limit=${limit}`);
 
     const { data: offers, error } = await supabase
       .from("store_offers")
@@ -302,7 +336,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       } else {
         const label = effectiveItemId !== mlb ? `${mlb} (item=${effectiveItemId})` : mlb;
         log(`Buscando preço para ${label}...`);
-        price = await getPriceFromML(effectiveItemId, mlb, accessToken, log);
+        price = await getPriceFromML(effectiveItemId, mlb, appToken, log);
       }
 
       if (price === null) {
