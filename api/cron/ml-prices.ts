@@ -197,8 +197,59 @@ function mlCanonicalUrl(id: string): string {
 }
 
 /**
+ * Busca recursivamente um preço (R$1–R$99999) num objeto JSON.
+ * Prioriza o padrão ML {fraction, cents} antes de campos genéricos.
+ * Limite de profundidade 12 para evitar loops em estruturas grandes.
+ */
+function findPriceInObj(obj: any, depth = 0): number | null {
+  if (depth > 12 || obj === null || typeof obj !== "object") return null;
+
+  if (Array.isArray(obj)) {
+    for (const item of obj) {
+      const p = findPriceInObj(item, depth + 1);
+      if (p !== null) return p;
+    }
+    return null;
+  }
+
+  // Padrão ML-específico: {fraction: "39", cents: 90} → R$39,90
+  if ("fraction" in obj && "cents" in obj) {
+    const int = typeof obj.fraction === "string" ? parseInt(obj.fraction, 10) : Number(obj.fraction);
+    const dec = typeof obj.cents === "string" ? parseInt(obj.cents, 10) : Number(obj.cents);
+    if (Number.isFinite(int) && Number.isFinite(dec) && int > 0 && int < 100000) {
+      return int + dec / 100;
+    }
+  }
+
+  // Campos numéricos comuns de preço
+  for (const key of ["price", "amount", "value", "basePrice", "salePrice", "currentPrice", "buyingPrice"]) {
+    const v = obj[key];
+    if (typeof v === "number" && v >= 1 && v < 100000) return v;
+    if (typeof v === "string") {
+      const p = parseFloat(v.replace(",", "."));
+      if (Number.isFinite(p) && p >= 1 && p < 100000) return p;
+    }
+  }
+
+  for (const key of Object.keys(obj)) {
+    if (typeof obj[key] === "object" && obj[key] !== null) {
+      const p = findPriceInObj(obj[key], depth + 1);
+      if (p !== null) return p;
+    }
+  }
+
+  return null;
+}
+
+/**
  * Extrai preço do HTML da página do produto ML.
- * ML usa AggregateOffer.lowPrice no JSON-LD para páginas de catálogo (/p/).
+ * Estratégias em ordem de confiabilidade:
+ *  1. JSON-LD (schema.org AggregateOffer.lowPrice / Offer.price)
+ *  2. Open Graph / itemprop meta tags
+ *  3. Regex fraction+cents (padrão ML-específico de exibição de preço)
+ *  4. __NEXT_DATA__ (Next.js page props serializado)
+ *  5. __PRELOADED_STATE__ (React state do ML legado)
+ *  6. Inline JSON — numeric e quoted strings
  */
 async function getPriceFromPageHtml(
   url: string,
@@ -213,22 +264,31 @@ async function getPriceFromPageHtml(
     }
     const html = await res.text();
 
-    // diagnóstico: tamanho + início do HTML para entender o que ML retorna
-    log?.(`page HTML ${html.length}b [${label}]: ${html.slice(0, 200).replace(/\s+/g, " ")}`);
+    // Diagnóstico: quais padrões de preço existem no HTML
+    const hasLdJson = html.includes("application/ld+json");
+    const hasNextData = html.includes("__NEXT_DATA__");
+    const hasPreloaded = html.includes("__PRELOADED_STATE__");
+    const hasFraction = html.includes('"fraction"');
+    const hasAmount = html.includes('"amount"');
+    log?.(`page HTML ${html.length}b [${label}] ld=${hasLdJson} next=${hasNextData} preloaded=${hasPreloaded} fraction=${hasFraction} amount=${hasAmount}`);
+
+    // Snippet ao redor do primeiro "price" para debug
+    const priceIdx = html.toLowerCase().indexOf('"price"');
+    if (priceIdx >= 0) {
+      log?.(`price snippet [${label}]: ...${html.slice(Math.max(0, priceIdx - 20), priceIdx + 80).replace(/\s+/g, " ")}...`);
+    }
 
     // 1. JSON-LD (schema.org Product)
-    // ML usa AggregateOffer.lowPrice em páginas de catálogo e Offer.price em listings
+    // ML usa AggregateOffer.lowPrice em /p/ e Offer.price em listings individuais
     for (const m of html.matchAll(/<script[^>]+type="application\/ld\+json"[^>]*>([\s\S]*?)<\/script>/gi)) {
       try {
         const data = JSON.parse(m[1].trim());
         const nodes = Array.isArray(data) ? data : [data];
         for (const node of nodes) {
-          // Suporte a @graph
           const graph: any[] = node?.["@graph"] ?? [node];
           for (const item of graph) {
             if (!item?.offers) continue;
             const offer = Array.isArray(item.offers) ? item.offers[0] : item.offers;
-            // Offer.price OU AggregateOffer.lowPrice
             const raw = offer?.price ?? offer?.lowPrice;
             const p = typeof raw === "string" ? parseFloat(raw.replace(",", ".")) : Number(raw);
             if (isFinite(p) && p > 0) {
@@ -254,11 +314,60 @@ async function getPriceFromPageHtml(
       }
     }
 
-    // 3. JSON embutido no HTML (React initial state) — procura padrão "price":39.90
-    // Exclui preços 0 e muito altos (provavelmente datas/ids)
-    const priceMatches = [...html.matchAll(/"(?:price|lowPrice)"\s*:\s*([\d]+(?:\.\d{1,2})?)/g)];
+    // 3. Padrão ML fraction+cents via regex (mais rápido que parse de JSON completo)
+    // ML usa {fraction:"39",cents:90} para exibir "39,90" com estilos separados
+    const fractionMatch = html.match(/"fraction"\s*:\s*"?(\d+)"?\s*,\s*"cents"\s*:\s*"?(\d+)"?/);
+    if (fractionMatch) {
+      const intPart = parseInt(fractionMatch[1], 10);
+      const decPart = parseInt(fractionMatch[2], 10);
+      const p = intPart + decPart / 100;
+      if (isFinite(p) && p >= 1 && p < 100000) {
+        log?.(`fraction+cents R$ ${p} [${label}]`);
+        return p;
+      }
+    }
+
+    // 4. __NEXT_DATA__ (Next.js serializa page props como JSON)
+    const nextDataM =
+      html.match(/<script[^>]+id="__NEXT_DATA__"[^>]*>([\s\S]*?)<\/script>/i) ??
+      html.match(/<script[^>]+type="application\/json"[^>]*id="__NEXT_DATA__"[^>]*>([\s\S]*?)<\/script>/i);
+    if (nextDataM) {
+      try {
+        const nextData = JSON.parse(nextDataM[1].trim());
+        const p = findPriceInObj(nextData);
+        if (p !== null) {
+          log?.(`__NEXT_DATA__ R$ ${p} [${label}]`);
+          return p;
+        }
+        log?.(`__NEXT_DATA__ sem preço [${label}]`);
+      } catch (e: any) {
+        log?.(`__NEXT_DATA__ parse err [${label}]: ${e?.message?.slice(0, 80)}`);
+      }
+    }
+
+    // 5. __PRELOADED_STATE__ (React state legado do ML, pode estar em JSON ou string escapada)
+    const preloadedM =
+      html.match(/window\.__PRELOADED_STATE__\s*=\s*({[\s\S]*?});\s*(?:<\/script>|window\.)/i) ??
+      html.match(/window\.__PRELOADED_STATE__\s*=\s*'([\s\S]*?)';\s*<\/script>/i);
+    if (preloadedM) {
+      try {
+        const state = JSON.parse(preloadedM[1]);
+        const p = findPriceInObj(state);
+        if (p !== null) {
+          log?.(`__PRELOADED_STATE__ R$ ${p} [${label}]`);
+          return p;
+        }
+        log?.(`__PRELOADED_STATE__ sem preço [${label}]`);
+      } catch (e: any) {
+        log?.(`__PRELOADED_STATE__ parse err [${label}]: ${e?.message?.slice(0, 80)}`);
+      }
+    }
+
+    // 6. Inline JSON — bare numeric E quoted strings
+    // Captura: "price":39.90  ou  "price":"39.90"  ou  "amount":39,90
+    const priceMatches = [...html.matchAll(/"(?:price|lowPrice|amount)"\s*:\s*"?([\d]+(?:[.,]\d{1,2})?)"?/g)];
     for (const pm of priceMatches) {
-      const p = parseFloat(pm[1]);
+      const p = parseFloat(pm[1].replace(",", "."));
       if (isFinite(p) && p >= 1 && p < 100000) {
         log?.(`inline JSON R$ ${p} [${label}]`);
         return p;
