@@ -99,17 +99,49 @@ async function runPool<T>(
   await Promise.all(runners);
 }
 
-async function getPriceFromML(mlb: string, accessToken: string): Promise<number | null> {
+async function getPriceFromML(
+  mlb: string,
+  accessToken: string,
+  log?: (s: string) => void,
+): Promise<number | null> {
+  const headers = { Authorization: `Bearer ${accessToken}` };
+
+  // 1. Tenta endpoint padrão (funciona para listings individuais)
   try {
-    const res = await fetch(`https://api.mercadolibre.com/items/${mlb}`, {
-      headers: { Authorization: `Bearer ${accessToken}` },
-    });
-    if (!res.ok) return null;
-    const item = await res.json();
-    return item.price && item.price > 0 ? item.price : null;
-  } catch {
-    return null;
+    const res = await fetch(`https://api.mercadolibre.com/items/${mlb}`, { headers });
+    if (res.ok) {
+      const item = await res.json();
+      if (item.price && item.price > 0) return item.price;
+      log?.(`items OK mas price=0 para ${mlb}`);
+    } else {
+      log?.(`items status=${res.status} para ${mlb} — tentando catalog search`);
+    }
+  } catch (e: any) {
+    log?.(`items erro para ${mlb}: ${e?.message}`);
   }
+
+  // 2. Fallback: busca por catalog_product_id (para produtos /p/MLB... do catálogo)
+  try {
+    const res = await fetch(
+      `https://api.mercadolibre.com/sites/MLB/search?catalog_product_id=${mlb}&limit=1`,
+      { headers },
+    );
+    if (res.ok) {
+      const data = await res.json();
+      const first = (data.results ?? [])[0];
+      if (first?.price > 0) {
+        log?.(`catalog search ${mlb} → R$ ${first.price}`);
+        return first.price;
+      }
+      log?.(`catalog search ${mlb} sem resultados`);
+    } else {
+      log?.(`catalog search status=${res.status} para ${mlb}`);
+    }
+  } catch (e: any) {
+    log?.(`catalog search erro para ${mlb}: ${e?.message}`);
+  }
+
+  return null;
 }
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
@@ -248,7 +280,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         log(`Override manual para ${mlb}: R$ ${price}`);
       } else {
         log(`Buscando preço para ${mlb}...`);
-        price = await getPriceFromML(mlb, accessToken);
+        price = await getPriceFromML(mlb, accessToken, log);
       }
       const nowIso = new Date().toISOString();
 
