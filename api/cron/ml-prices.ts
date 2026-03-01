@@ -246,7 +246,18 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       log("Token renovado com sucesso");
     }
 
-    log(`Token OK - offset=${offset} limit=${limit}`);
+    // Verifica se o token realmente funciona antes de processar as ofertas
+    const tokenCheckRes = await fetch("https://api.mercadolibre.com/users/me", {
+      headers: { Authorization: `Bearer ${accessToken}` },
+    });
+    if (!tokenCheckRes.ok) {
+      const body = await tokenCheckRes.text().catch(() => "");
+      throw new Error(
+        `Token ML inválido (HTTP ${tokenCheckRes.status}). Acesse /api/ml/oauth/start para re-autorizar. ${body.slice(0, 200)}`,
+      );
+    }
+
+    log(`Token válido ✓ - offset=${offset} limit=${limit}`);
 
     const { data: offers, error } = await supabase
       .from("store_offers")
@@ -304,11 +315,11 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         return;
       }
 
-      // Salva snapshot de preço (offer_id = ID numérico inteiro de store_offers)
+      // Salva snapshot de preço (offer_id = MLB external_id TEXT, chave da tabela)
       const { error: upsertErr } = await supabase
         .from("offer_last_price")
         .upsert(
-          { offer_id: offer.id, price, verified_date: utcDateOnly() },
+          { offer_id: mlb, price, verified_date: utcDateOnly() },
           { onConflict: "offer_id" },
         );
       if (upsertErr) log(`WARN offer_last_price ${mlb}: ${upsertErr.message}`);
