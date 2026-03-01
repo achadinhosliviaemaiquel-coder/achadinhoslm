@@ -21,9 +21,15 @@ function readHeader(req: VercelRequest, name: string): string {
 }
 
 function readCronSecret(req: VercelRequest): string {
+  // 1. header x-cron-secret (legado/custom)
   const h = readHeader(req, "x-cron-secret");
   if (h) return h;
 
+  // 2. Authorization: Bearer <secret> (mecanismo nativo Vercel CRON_SECRET)
+  const auth = readHeader(req, "authorization");
+  if (auth.startsWith("Bearer ")) return auth.slice(7).trim();
+
+  // 3. query param (dev local)
   try {
     const host = readHeader(req, "x-forwarded-host") || readHeader(req, "host");
     const proto =

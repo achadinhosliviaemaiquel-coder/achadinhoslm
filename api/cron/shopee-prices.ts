@@ -1,4 +1,4 @@
-// api/cron/shopee-prices.ts - VERSÃO CORRIGIDA (sem catch duplicado)
+// api/cron/shopee-prices.ts
 import type { VercelRequest, VercelResponse } from "@vercel/node";
 import { createClient } from "@supabase/supabase-js";
 import crypto from "crypto";
@@ -36,6 +36,34 @@ function requireEnv(name: string, value: string | undefined) {
   if (!value) throw new Error(`Missing env: ${name}`);
 }
 
+function readHeader(req: VercelRequest, name: string): string {
+  const v = req.headers[name.toLowerCase()];
+  if (Array.isArray(v)) return v[0] ?? "";
+  return (v as string | undefined) ?? "";
+}
+
+function readCronSecret(req: VercelRequest): string {
+  // 1. header x-cron-secret (legado/custom)
+  const h = readHeader(req, "x-cron-secret");
+  if (h) return h;
+
+  // 2. Authorization: Bearer <secret> (mecanismo nativo Vercel CRON_SECRET)
+  const auth = readHeader(req, "authorization");
+  if (auth.startsWith("Bearer ")) return auth.slice(7).trim();
+
+  // 3. query param (dev local)
+  try {
+    const host = readHeader(req, "x-forwarded-host") || readHeader(req, "host");
+    const proto =
+      readHeader(req, "x-forwarded-proto") ||
+      (host?.includes("localhost") ? "http" : "https");
+    const url = new URL(req.url || "/", `${proto}://${host || "localhost"}`);
+    return url.searchParams.get("cron_secret") || "";
+  } catch {
+    return "";
+  }
+}
+
 function sha256HexLower(input: string): string {
   return crypto.createHash("sha256").update(input, "utf8").digest("hex");
 }
@@ -70,10 +98,7 @@ async function shopeeGraphQL<T>(query: string, variables: Record<string, any>): 
 
   const res = await fetch(SHOPEE_API_BASE, {
     method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: auth,
-    },
+    headers: { "Content-Type": "application/json", Authorization: auth },
     body: payload,
   });
 
@@ -85,17 +110,23 @@ async function shopeeGraphQL<T>(query: string, variables: Record<string, any>): 
 
 async function resolveFinalUrl(shortUrl: string): Promise<string> {
   try {
-    const head = await fetch(shortUrl, { method: "HEAD", redirect: "follow", headers: { "User-Agent": "Mozilla/5.0" } });
+    const head = await fetch(shortUrl, {
+      method: "HEAD",
+      redirect: "follow",
+      headers: { "User-Agent": "Mozilla/5.0" },
+    });
     return head.url || shortUrl;
   } catch {}
 
-  const get = await fetch(shortUrl, { method: "GET", redirect: "follow", headers: { "User-Agent": "Mozilla/5.0" } });
+  const get = await fetch(shortUrl, {
+    method: "GET",
+    redirect: "follow",
+    headers: { "User-Agent": "Mozilla/5.0" },
+  });
   return get.url || shortUrl;
 }
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
-  const debug = String(req.query.debug ?? "") === "1";
-
   try {
     requireEnv("SUPABASE_URL", SUPABASE_URL);
     requireEnv("SUPABASE_SERVICE_ROLE_KEY", SUPABASE_SERVICE_ROLE_KEY);
@@ -103,7 +134,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     requireEnv("SHOPEE_APP_ID", SHOPEE_APP_ID);
     requireEnv("SHOPEE_SECRET", SHOPEE_SECRET);
 
-    const cronSecret = (req.query.cron_secret as string | undefined) ?? "";
+    const cronSecret = readCronSecret(req);
     if (!cronSecret || cronSecret !== CRON_SECRET) {
       return res.status(401).json({ ok: false, error: "Unauthorized" });
     }
@@ -153,7 +184,6 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
     `;
 
     for (const off of rows) {
-      let finalUrl: string | null = null;
       let ids: { shopId: number; itemId: number } | null = null;
 
       try {
@@ -166,7 +196,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         if (ids) {
           counters.usedCachedExternalId++;
         } else {
-          finalUrl = await resolveFinalUrl(off.url);
+          const finalUrl = await resolveFinalUrl(off.url);
           counters.resolvedShortLinks++;
 
           ids = parseShopeeIdsFromAnyUrl(finalUrl);
@@ -196,17 +226,22 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
         const price = Number(priceStr.replace(",", "."));
         if (!Number.isFinite(price) || price <= 0) continue;
 
+        const nowIso = new Date().toISOString();
+
+        // Salva em centavos, igual ao ML
         await supabase
           .from("store_offers")
           .update({
-            price,
-            currency: "BRL",
-            updated_at: new Date().toISOString(),
+            current_price_cents: Math.round(price * 100),
+            current_currency: "BRL",
+            current_price_updated_at: nowIso,
+            last_scrape_at: nowIso,
+            last_scrape_status: "ok",
+            updated_at: nowIso,
           })
           .eq("id", off.id);
 
         counters.updated++;
-
       } catch (e: any) {
         counters.failed++;
         counters.apiErrors++;
@@ -214,14 +249,13 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       }
     }
 
-    return res.status(200).json({ 
-      ok: true, 
-      offset, 
-      limit, 
+    return res.status(200).json({
+      ok: true,
+      offset,
+      limit,
       counters,
-      message: `Processados ${counters.scanned} ofertas, ${counters.updated} atualizadas.` 
+      message: `Processados ${counters.scanned} ofertas, ${counters.updated} atualizadas.`,
     });
-
   } catch (e: any) {
     console.error(e);
     return res.status(500).json({ ok: false, error: e?.message ?? String(e) });

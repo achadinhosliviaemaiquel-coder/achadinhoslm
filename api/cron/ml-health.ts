@@ -1,13 +1,10 @@
-import "dotenv/config";
+// api/cron/ml-health.ts - Health check do token OAuth do Mercado Livre
 import type { VercelRequest, VercelResponse } from "@vercel/node";
-import { createClient, type SupabaseClient } from "@supabase/supabase-js";
-import crypto from "crypto";
+import { createClient } from "@supabase/supabase-js";
 
 const SUPABASE_URL = process.env.SUPABASE_URL!;
 const SUPABASE_SERVICE_ROLE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY!;
 const CRON_SECRET = process.env.CRON_SECRET!;
-const COOKIE_ENC_KEY = process.env.ML_COOKIE_ENC_KEY!;
-const PLATFORM_LABEL = process.env.ML_PLATFORM_LABEL || "mercadolivre";
 
 function readHeader(req: VercelRequest, name: string): string {
   const v = req.headers[name.toLowerCase()];
@@ -15,214 +12,107 @@ function readHeader(req: VercelRequest, name: string): string {
   return (v as string | undefined) ?? "";
 }
 
-function utcDateString(d = new Date()) {
-  const y = d.getUTCFullYear();
-  const m = String(d.getUTCMonth() + 1).padStart(2, "0");
-  const day = String(d.getUTCDate()).padStart(2, "0");
-  return `${y}-${m}-${day}`;
-}
+function readCronSecret(req: VercelRequest): string {
+  const h = readHeader(req, "x-cron-secret");
+  if (h) return h;
 
-function decryptCookie(encB64: string) {
-  const key = Buffer.from(COOKIE_ENC_KEY, "base64");
-  if (key.length !== 32) throw new Error("ML_COOKIE_ENC_KEY must decode to 32 bytes");
-  const buf = Buffer.from(encB64, "base64");
-  const iv = buf.subarray(0, 12);
-  const tag = buf.subarray(12, 28);
-  const data = buf.subarray(28);
-  const decipher = crypto.createDecipheriv("aes-256-gcm", key, iv);
-  decipher.setAuthTag(tag);
-  const dec = Buffer.concat([decipher.update(data), decipher.final()]);
-  return dec.toString("utf8");
-}
+  const auth = readHeader(req, "authorization");
+  if (auth.startsWith("Bearer ")) return auth.slice(7).trim();
 
-function normalizeCookieHeader(cookie: string) {
-  let s = (cookie || "").trim();
-  s = s.replace(/^cookie\s*:\s*/i, "");
-  s = s.replace(/[\r\n]+/g, " ").trim();
-  s = s.replace(/\s{2,}/g, " ");
-  return s;
-}
-
-async function getGlobalCookie(supabase: SupabaseClient): Promise<string | null> {
-  const { data, error } = await supabase
-    .from("affiliate_ml_settings")
-    .select("cookie_encrypted, updated_at")
-    .eq("id", "singleton")
-    .maybeSingle<{ cookie_encrypted: string; updated_at: string }>();
-
-  if (error || !data?.cookie_encrypted) return null;
   try {
-    return normalizeCookieHeader(decryptCookie(data.cookie_encrypted));
+    const host = readHeader(req, "x-forwarded-host") || readHeader(req, "host");
+    const proto =
+      readHeader(req, "x-forwarded-proto") ||
+      (host?.includes("localhost") ? "http" : "https");
+    const url = new URL(req.url || "/", `${proto}://${host || "localhost"}`);
+    return url.searchParams.get("cron_secret") || "";
   } catch {
-    return null;
+    return "";
   }
-}
-
-function buildBrowserHeaders(cookie: string | null) {
-  const headers: Record<string, string> = {
-    accept:
-      "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
-    "accept-language": "pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7",
-    "cache-control": "no-cache",
-    pragma: "no-cache",
-    "upgrade-insecure-requests": "1",
-    referer: "https://www.mercadolivre.com.br/",
-    "user-agent":
-      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-  };
-  if (cookie) headers.cookie = cookie;
-  return headers;
-}
-
-function safeJsonParse<T = any>(s: string): T | null {
-  try {
-    return JSON.parse(s) as T;
-  } catch {
-    return null;
-  }
-}
-
-function parseNumberLoose(v: unknown): number | null {
-  if (typeof v === "number" && Number.isFinite(v)) return v;
-  if (typeof v !== "string") return null;
-  const cleaned = v
-    .replace(/\s+/g, " ")
-    .replace(/[R$\u00A0]/g, "")
-    .trim()
-    .replace(/\./g, "")
-    .replace(",", ".");
-  const m = cleaned.match(/-?\d+(\.\d+)?/);
-  if (!m) return null;
-  const n = Number(m[0]);
-  return Number.isFinite(n) ? n : null;
-}
-
-function extractMetaPrice(html: string) {
-  const priceM = html.match(/<meta[^>]+itemprop=["']price["'][^>]+content=["']([^"']+)["'][^>]*>/i);
-  const curM = html.match(/<meta[^>]+itemprop=["']priceCurrency["'][^>]+content=["']([^"']+)["'][^>]*>/i);
-  const price = priceM?.[1] ? parseNumberLoose(priceM[1]) : null;
-  const currency = curM?.[1] ?? null;
-  return { price, currency };
-}
-
-function looksLikeLoginOrBot(html: string, finalUrl: string) {
-  const s = html.toLowerCase();
-  const botSignals =
-    s.includes("hcaptcha") ||
-    s.includes("g-recaptcha") ||
-    s.includes("recaptcha") ||
-    s.includes("captcha") ||
-    s.includes("challenge") ||
-    (s.includes("verifique") && s.includes("robô")) ||
-    s.includes("não sou um robô");
-
-  const loginSignals =
-    s.includes("iniciar sessão") ||
-    s.includes("inicie sessão") ||
-    s.includes("entrar na sua conta") ||
-    (s.includes("identificação") && s.includes("e-mail"));
-
-  const urlSignals = /\/(authorization|auth|login)\b/i.test(finalUrl) || /\/(ingreso|entrar)\b/i.test(finalUrl);
-  return botSignals || loginSignals || urlSignals;
 }
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
   try {
-    const got = readHeader(req, "x-cron-secret");
-    if (got !== CRON_SECRET) return res.status(401).json({ ok: false, error: "Unauthorized" });
+    const got = readCronSecret(req);
+    if (!got || got !== CRON_SECRET) {
+      return res.status(401).json({ ok: false, error: "Unauthorized" });
+    }
 
     const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, {
       auth: { persistSession: false },
     });
 
-    const cookie = await getGlobalCookie(supabase);
-    if (!cookie) {
-      return res.status(200).json({
-        ok: true,
-        status: "cookie_missing",
-        cookieOk: false,
-      });
-    }
-
-    const { data: offer, error: offErr } = await supabase
-      .from("store_offers")
-      .select("id, external_id, url")
-      .eq("platform", PLATFORM_LABEL)
-      .eq("is_active", true)
-      .not("external_id", "is", null)
+    // Busca o token mais recente
+    const { data: tokenRow, error: tokenErr } = await supabase
+      .from("ml_oauth_tokens")
+      .select("id, access_token, refresh_token, expires_at, updated_at")
+      .order("id", { ascending: false })
       .limit(1)
-      .maybeSingle<{ id: number; external_id: string | null; url: string | null }>();
+      .maybeSingle();
 
-    if (offErr) throw new Error(offErr.message);
-    if (!offer?.id) {
+    if (tokenErr) {
+      return res.status(500).json({ ok: false, error: tokenErr.message });
+    }
+
+    if (!tokenRow) {
       return res.status(200).json({
         ok: true,
-        status: "no_active_offer",
-        cookieOk: true,
+        status: "token_missing",
+        tokenOk: false,
+        hint: "Nenhum token encontrado. Rode /api/ml/oauth/start para autenticar.",
       });
     }
 
-    const targetUrl =
-      offer.url?.trim() ||
-      (offer.external_id ? `https://www.mercadolivre.com.br/p/${offer.external_id}` : null);
+    const expiresAt = new Date(tokenRow.expires_at);
+    const now = new Date();
+    const isExpired = expiresAt < now;
+    const minutesUntilExpiry = Math.round((expiresAt.getTime() - now.getTime()) / 60000);
 
-    if (!targetUrl) {
+    if (isExpired && !tokenRow.refresh_token) {
       return res.status(200).json({
         ok: true,
-        status: "offer_missing_url",
-        cookieOk: true,
-        offerId: offer.id,
+        status: "token_expired_no_refresh",
+        tokenOk: false,
+        expiresAt: tokenRow.expires_at,
+        hint: "Token expirado e sem refresh_token. Rode /api/ml/oauth/start para reautenticar.",
       });
     }
 
-    const r = await fetch(targetUrl, { method: "GET", redirect: "follow", headers: buildBrowserHeaders(cookie) });
-    const anyR = r as any;
-    const finalUrl = typeof anyR.url === "string" ? anyR.url : targetUrl;
-    const html = await r.text();
+    // Testa o token fazendo uma chamada real à API do ML
+    const testRes = await fetch("https://api.mercadolibre.com/users/me", {
+      headers: { Authorization: `Bearer ${tokenRow.access_token}` },
+    });
 
-    if (!r.ok) {
+    if (!testRes.ok) {
+      const body = await testRes.json().catch(() => ({}));
       return res.status(200).json({
         ok: true,
-        status: "http_error",
-        cookieOk: true,
-        offerId: offer.id,
-        httpStatus: r.status,
-        finalUrl,
+        status: isExpired ? "token_expired" : "token_invalid",
+        tokenOk: false,
+        httpStatus: testRes.status,
+        expiresAt: tokenRow.expires_at,
+        isExpired,
+        minutesUntilExpiry,
+        hasRefreshToken: !!tokenRow.refresh_token,
+        apiError: (body as any)?.message ?? null,
+        hint: isExpired
+          ? "Token expirado. O ml-prices vai fazer refresh automático na próxima execução."
+          : "Token rejeitado pela API. Rode /api/ml/oauth/start para reautenticar.",
       });
     }
 
-    if (looksLikeLoginOrBot(html, finalUrl)) {
-      return res.status(200).json({
-        ok: true,
-        status: "bot_or_login",
-        cookieOk: true,
-        offerId: offer.id,
-        finalUrl,
-      });
-    }
-
-    const meta = extractMetaPrice(html);
-    if (meta.price === null) {
-      return res.status(200).json({
-        ok: true,
-        status: "price_not_found",
-        cookieOk: true,
-        offerId: offer.id,
-        finalUrl,
-        hint: "No meta price found; full cron likely still works due to deeper parsers.",
-        dateUtc: utcDateString(),
-      });
-    }
+    const user = await testRes.json().catch(() => ({}));
 
     return res.status(200).json({
       ok: true,
       status: "healthy",
-      cookieOk: true,
-      offerId: offer.id,
-      finalUrl,
-      price: meta.price,
-      currency: meta.currency ?? "BRL",
-      dateUtc: utcDateString(),
+      tokenOk: true,
+      expiresAt: tokenRow.expires_at,
+      isExpired,
+      minutesUntilExpiry,
+      hasRefreshToken: !!tokenRow.refresh_token,
+      mlUserId: (user as any)?.id ?? null,
+      mlNickname: (user as any)?.nickname ?? null,
     });
   } catch (e: any) {
     return res.status(500).json({ ok: false, error: e?.message || "Unknown error" });
