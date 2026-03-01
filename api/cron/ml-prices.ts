@@ -212,8 +212,16 @@ async function getPriceFromML(
     );
     if (res.ok) {
       const data = await res.json();
+      // Log das chaves de diagnóstico (apenas primeira vez, evita flood)
+      log?.(`/products/${catalogId} keys=${Object.keys(data).join(",")}`);
+      if (data.buy_box_winner !== undefined) {
+        log?.(`buy_box_winner=${JSON.stringify(data.buy_box_winner).slice(0, 300)}`);
+      }
       const price =
         data.buy_box_winner?.price ??
+        data.buy_box_winner?.original_price ??
+        (Array.isArray(data.offers) ? (data.offers[0]?.price ?? null) : null) ??
+        data.price ??
         data.settings?.price ??
         null;
       if (price && price > 0) {
