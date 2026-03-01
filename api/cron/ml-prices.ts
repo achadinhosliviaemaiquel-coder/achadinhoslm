@@ -104,10 +104,14 @@ async function runPool<T>(
 
 /**
  * Obtém um token de aplicação via client_credentials.
- * Usado para acessar recursos públicos do ML (itens, busca), sem precisar
- * de autorização do usuário. Diferente do token OAuth de usuário.
+ * Usado para acessar recursos públicos do ML (itens, busca).
+ * Retorna null se o app não suportar este grant type.
  */
-async function getMLAppToken(clientId: string, clientSecret: string): Promise<string | null> {
+async function getMLAppToken(
+  clientId: string,
+  clientSecret: string,
+  log?: (s: string) => void,
+): Promise<string | null> {
   try {
     const res = await fetch("https://api.mercadolibre.com/oauth/token", {
       method: "POST",
@@ -118,30 +122,48 @@ async function getMLAppToken(clientId: string, clientSecret: string): Promise<st
         client_secret: clientSecret,
       }).toString(),
     });
-    if (!res.ok) return null;
+    if (!res.ok) {
+      const body = await res.text().catch(() => "");
+      log?.(`WARN client_credentials status=${res.status}: ${body.slice(0, 200)}`);
+      return null;
+    }
     const data = await res.json();
     return (data.access_token as string) ?? null;
-  } catch {
+  } catch (e: any) {
+    log?.(`WARN client_credentials erro: ${e?.message}`);
     return null;
   }
+}
+
+/**
+ * Faz fetch ao ML tentando sem auth primeiro (endpoint público).
+ * Se retornar 401/403, tenta novamente com o token de usuário como fallback.
+ */
+async function mlFetch(url: string, userToken: string): Promise<Response> {
+  // Primeira tentativa: sem auth (endpoints públicos do ML não precisam de token)
+  const pubRes = await fetch(url);
+  if (pubRes.ok || (pubRes.status !== 401 && pubRes.status !== 403)) {
+    return pubRes;
+  }
+  // Fallback: user OAuth token
+  return fetch(url, { headers: { Authorization: `Bearer ${userToken}` } });
 }
 
 /**
  * Busca preço do ML.
  * @param itemId   ID a usar no endpoint /items/ (pode ser ml_item_id ou external_id)
  * @param catalogId  ID do catálogo (external_id) para fallback de busca por catalog_product_id
+ * @param userToken  Token OAuth do usuário (fallback se endpoint não for público)
  */
 async function getPriceFromML(
   itemId: string,
   catalogId: string,
-  accessToken: string,
+  userToken: string,
   log?: (s: string) => void,
 ): Promise<number | null> {
-  const headers = { Authorization: `Bearer ${accessToken}` };
-
   // 1. Tenta endpoint /items/ (funciona para listings individuais; ml_item_id já resolvido)
   try {
-    const res = await fetch(`https://api.mercadolibre.com/items/${itemId}`, { headers });
+    const res = await mlFetch(`https://api.mercadolibre.com/items/${itemId}`, userToken);
     if (res.ok) {
       const item = await res.json();
       if (item.price && item.price > 0) return item.price;
@@ -155,9 +177,9 @@ async function getPriceFromML(
 
   // 2. Fallback: busca por catalog_product_id (para produtos /p/MLB... sem ml_item_id resolvido)
   try {
-    const res = await fetch(
+    const res = await mlFetch(
       `https://api.mercadolibre.com/sites/MLB/search?catalog_product_id=${catalogId}&limit=1`,
-      { headers },
+      userToken,
     );
     if (res.ok) {
       const data = await res.json();
@@ -283,15 +305,16 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       log("Token de usuário OK ✓");
     }
 
-    // Obtém token de aplicação (client_credentials) para acessar itens/catálogo públicos.
-    // O token de usuário (OAuth) pode não ter permissão para endpoints públicos do marketplace.
-    const appToken = await getMLAppToken(ML_CLIENT_ID, ML_CLIENT_SECRET);
-    if (!appToken) {
-      throw new Error(
-        "Falha ao obter app token (client_credentials). Verifique ML_CLIENT_ID e ML_CLIENT_SECRET.",
-      );
-    }
-    log(`App token obtido ✓ - offset=${offset} limit=${limit}`);
+    // Tenta obter token de aplicação (client_credentials) como upgrade.
+    // Se não disponível (app não suporta), usa o token de usuário como fallback.
+    // Os endpoints de itens/busca do ML são públicos — tentativa sem auth é feita primeiro.
+    const appToken = await getMLAppToken(ML_CLIENT_ID, ML_CLIENT_SECRET, log);
+    const tokenForItems = appToken ?? (accessToken as string);
+    log(
+      appToken
+        ? `App token (client_credentials) ✓ - offset=${offset} limit=${limit}`
+        : `Usando token de usuário como fallback - offset=${offset} limit=${limit}`,
+    );
 
     const { data: offers, error } = await supabase
       .from("store_offers")
@@ -336,7 +359,7 @@ export default async function handler(req: VercelRequest, res: VercelResponse) {
       } else {
         const label = effectiveItemId !== mlb ? `${mlb} (item=${effectiveItemId})` : mlb;
         log(`Buscando preço para ${label}...`);
-        price = await getPriceFromML(effectiveItemId, mlb, appToken, log);
+        price = await getPriceFromML(effectiveItemId, mlb, tokenForItems, log);
       }
 
       if (price === null) {
