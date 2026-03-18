@@ -27,6 +27,17 @@ export function Header() {
           </span>
         </Link>
 
+        {/* 📝 Reviews link */}
+        <Link
+          to="/reviews"
+          className="text-sm font-medium text-foreground/80 hover:text-foreground transition shrink-0 flex items-center"
+        >
+          Reviews
+          <span className="hidden sm:inline bg-green-100 text-green-700 text-xs px-1.5 py-0.5 rounded-full ml-1 leading-none">
+            novo
+          </span>
+        </Link>
+
         {/* 🔍 Search Bar (DESKTOP) */}
         <form
           onSubmit={handleSearch}

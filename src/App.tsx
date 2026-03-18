@@ -16,6 +16,7 @@ import AdminPage from "./pages/AdminPage"
 import NotFound from "./pages/NotFound"
 import SearchPage from "@/pages/SearchPage"
 import BrandPage from "@/pages/BrandPage"
+import ReviewsPage from "./pages/ReviewsPage"
 
 const queryClient = new QueryClient()
 
@@ -39,6 +40,7 @@ const App = () => {
             <Route path="/category/:category" element={<CategoryPage />} />
             <Route path="/go/:store/:slug" element={<BridgePage />} />
             <Route path="/search" element={<SearchPage />} />
+            <Route path="/reviews" element={<ReviewsPage />} />
             <Route path="/login" element={<LoginPage />} />
 
             {/* 🔒 ADMIN */}
