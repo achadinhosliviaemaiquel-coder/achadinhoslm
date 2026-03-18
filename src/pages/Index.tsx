@@ -1,7 +1,9 @@
 import { Layout } from "@/components/Layout";
 import { ProductCard } from "@/components/ProductCard";
 import { CategoryCard } from "@/components/CategoryCard";
+import { OfferCard } from "@/components/OfferCard";
 import { useFeaturedProducts } from "@/hooks/useFeaturedProducts";
+import { useRecentOffers } from "@/hooks/useRecentOffers";
 import { CATEGORY_LABELS, type ProductCategory } from "@/types/product";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
@@ -45,6 +47,7 @@ function ChannelButton({
 
 export default function Index() {
   const { data: products, isLoading } = useFeaturedProducts(6);
+  const { data: recentOffers, isLoading: isLoadingOffers } = useRecentOffers(12);
 
   return (
     <Layout
@@ -83,6 +86,46 @@ export default function Index() {
             Canal de ofertas no Telegram
           </ChannelButton>
         </section>
+
+        {/* POSTADAS AGORA */}
+        {(isLoadingOffers || (recentOffers && recentOffers.length > 0)) && (
+          <section className="space-y-4">
+            <div>
+              <h2 className="text-lg font-semibold text-foreground">🔥 Postadas agora</h2>
+              <p className="text-sm text-muted-foreground">Chegaram hoje nos grupos</p>
+            </div>
+
+            {isLoadingOffers ? (
+              <div className="flex gap-4 overflow-hidden">
+                {[...Array(4)].map((_, i) => (
+                  <div key={i} className="w-44 space-y-3 shrink-0">
+                    <Skeleton className="aspect-square rounded-2xl" />
+                    <Skeleton className="h-4 w-3/4" />
+                    <Skeleton className="h-5 w-1/2" />
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <Carousel opts={{ align: "start", dragFree: true }} className="w-full">
+                <CarouselContent className="-ml-3">
+                  {recentOffers!.map((offer) => (
+                    <CarouselItem
+                      key={offer.id}
+                      className="pl-3 !basis-[170px] sm:!basis-[190px] md:!basis-[210px] lg:!basis-[230px] xl:!basis-[240px] !shrink-0"
+                    >
+                      <OfferCard offer={offer} />
+                    </CarouselItem>
+                  ))}
+                </CarouselContent>
+
+                <div className="hidden md:block">
+                  <CarouselPrevious />
+                  <CarouselNext />
+                </div>
+              </Carousel>
+            )}
+          </section>
+        )}
 
         {/* CATEGORIAS */}
         <section className="space-y-4">
