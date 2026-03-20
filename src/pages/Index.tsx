@@ -114,7 +114,7 @@ function ReviewPreviewCard({ product }: { product: ReviewProduct }) {
         <p className="text-[10px] text-muted-foreground capitalize">{product.category}</p>
         <p className="text-xs font-semibold leading-snug line-clamp-2">{product.name}</p>
         <div className="flex gap-0.5">
-          {[1,2,3,4,5].map(i => (
+          {[1, 2, 3, 4, 5].map(i => (
             <Star key={i} className="h-3 w-3 fill-amber-400 text-amber-400" />
           ))}
         </div>
@@ -212,7 +212,7 @@ export default function Index() {
         )}
 
         {/* ——— CATEGORIAS ——— */}
-        
+
         <section className="space-y-4">
           <h2 className="text-lg font-semibold">Categorias</h2>
           <div className="max-w-[950px] mx-auto grid grid-cols-3 gap-4">
@@ -225,7 +225,7 @@ export default function Index() {
         {/* ——— REVIEWS DO INSTAGRAM ——— */}
         {hasReviews && (
           <>
-            
+
             <section className="space-y-3">
               <div>
                 <h2 className="text-lg font-semibold">Reviews do Instagram</h2>
@@ -249,7 +249,7 @@ export default function Index() {
         )}
 
         {/* ——— EM ALTA ——— */}
-        
+
         <section className="space-y-4">
           <h2 className="text-lg font-semibold">🔥 Em alta</h2>
           <p className="text-sm text-muted-foreground">
