@@ -28,7 +28,7 @@ const CATEGORIES = (Object.keys(CATEGORY_LABELS) as ProductCategory[]).sort(
 // Barra separadora de seção (igual ao mockup)
 function SectionLabel({ children }: { children: ReactNode }) {
   return (
-    <div className="-mx-4 sm:-mx-6 lg:-mx-8 px-4 py-1 bg-muted border-y border-border">
+    <div className="-mx-4 sm:-mx-6 lg:-mx-8 -my-3 px-4 py-1 bg-muted border-y border-border">
       <span className="text-[10px] font-medium text-muted-foreground uppercase tracking-widest">
         {children}
       </span>
@@ -163,10 +163,6 @@ export default function Index() {
 
         {/* CANAIS */}
         <section className="space-y-3 px-2">
-          <ChannelButton href="https://whatsapp.com/channel/0029VbCHBwUGzzKIsFbuHR15" bg="bg-[#25D366]">
-            <WhatsAppIcon />
-            Canal de ofertas no WhatsApp
-          </ChannelButton>
           <ChannelButton href="https://chat.whatsapp.com/Bvyh4RUuNA32qVtlHgiZJu" bg="bg-[#128C7E]">
             <WhatsAppIcon />
             Grupo VIP no WhatsApp
@@ -211,9 +207,7 @@ export default function Index() {
                 <OfferCard key={offer.id} offer={offer} />
               ))}
             </div>
-            <p className="text-center text-[10px] text-muted-foreground tracking-wide">
-              ← deslize para ver mais →
-            </p>
+
           </section>
         )}
 
