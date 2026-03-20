@@ -177,7 +177,7 @@ export default function Index() {
 
         {/* ——— POSTADAS AGORA ——— */}
         {(hasOffers || loadingOffers) && (
-          <SectionLabel>Novo — alimentado pelo n8n automaticamente</SectionLabel>
+          
         )}
 
         {loadingOffers && (
@@ -212,8 +212,7 @@ export default function Index() {
         )}
 
         {/* ——— CATEGORIAS ——— */}
-        <SectionLabel>Sem alteração</SectionLabel>
-
+        
         <section className="space-y-4">
           <h2 className="text-lg font-semibold">Categorias</h2>
           <div className="max-w-[950px] mx-auto grid grid-cols-3 gap-4">
@@ -226,8 +225,7 @@ export default function Index() {
         {/* ——— REVIEWS DO INSTAGRAM ——— */}
         {hasReviews && (
           <>
-            <SectionLabel>Novo — produtos do Instagram</SectionLabel>
-
+            
             <section className="space-y-3">
               <div>
                 <h2 className="text-lg font-semibold">Reviews do Instagram</h2>
@@ -251,8 +249,7 @@ export default function Index() {
         )}
 
         {/* ——— EM ALTA ——— */}
-        <SectionLabel>Sem alteração</SectionLabel>
-
+        
         <section className="space-y-4">
           <h2 className="text-lg font-semibold">🔥 Em alta</h2>
           <p className="text-sm text-muted-foreground">
