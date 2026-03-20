@@ -1,4 +1,4 @@
-import { Link, useNavigate } from "react-router-dom";
+import { Link, useNavigate, useLocation } from "react-router-dom";
 import { Search, User } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { useState } from "react";
@@ -6,34 +6,39 @@ import { useState } from "react";
 export function Header() {
   const [term, setTerm] = useState("");
   const navigate = useNavigate();
+  const location = useLocation();
 
   const handleSearch = (e: React.FormEvent) => {
     e.preventDefault();
     if (!term.trim()) return;
-
     navigate(`/search?q=${encodeURIComponent(term)}`);
     setTerm("");
   };
 
-  return (
-    <header className="sticky top-0 z-50 bg-background/95 border-b border-border">
-      <div className="container max-w-mobile mx-auto px-4 h-14 flex items-center justify-between gap-2">
+  const isReviews = location.pathname === "/reviews";
 
+  return (
+    <header className="sticky top-0 z-50 bg-background/95 border-b border-border backdrop-blur-sm">
+      <div className="container max-w-mobile mx-auto px-4 h-14 flex items-center justify-between gap-2">
         {/* 🛍️ Logo */}
         <Link to="/" className="flex items-center gap-2 shrink-0">
           <span className="text-2xl">🛍️</span>
-          <span className="font-bold text-lg text-foreground whitespace-nowrap">
+          <span className="font-bold text-lg text-foreground whitespace-nowrap hidden sm:inline">
             Achadinhos LM
           </span>
         </Link>
 
-        {/* 📝 Reviews link */}
+        {/* Q59: Link Reviews com badge "novo" */}
         <Link
           to="/reviews"
-          className="text-sm font-medium text-foreground/80 hover:text-foreground transition shrink-0 flex items-center"
+          className={`flex items-center gap-1.5 text-sm font-medium shrink-0 transition-colors ${
+            isReviews
+              ? "text-foreground"
+              : "text-muted-foreground hover:text-foreground"
+          }`}
         >
           Reviews
-          <span className="hidden sm:inline bg-green-100 text-green-700 text-xs px-1.5 py-0.5 rounded-full ml-1 leading-none">
+          <span className="bg-green-100 text-green-700 dark:bg-green-900 dark:text-green-300 text-[10px] font-semibold px-1.5 py-0.5 rounded-full leading-none">
             novo
           </span>
         </Link>
@@ -55,7 +60,6 @@ export function Header() {
 
         {/* 👤 Actions */}
         <div className="flex items-center gap-1">
-
           {/* 🔍 Mobile search */}
           <Button
             variant="ghost"

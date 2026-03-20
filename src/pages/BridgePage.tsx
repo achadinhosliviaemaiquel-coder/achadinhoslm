@@ -1,260 +1,168 @@
-import { useEffect, useMemo, useRef, useState } from "react"
-import { useParams, Link } from "react-router-dom"
-import { Button } from "@/components/ui/button"
-import { useProduct } from "@/hooks/useProducts"
-import {
-  detectBrowser,
-  generateClickId,
-  storeClickId,
-  appendClickId,
-  preserveUtmParams,
-} from "@/lib/browser-detection"
-import { trackBridgeLoaded, trackOutboundClick } from "@/lib/analytics"
-import { Loader2, ExternalLink } from "lucide-react"
-import { seedTrafficCtxFromUrl } from "@/lib/clickTracking"
+import { useEffect, useState } from "react";
+import { useParams, useNavigate } from "react-router-dom";
+import { supabase } from "@/integrations/supabase/client";
+import { Layout } from "@/components/Layout";
+import { Loader2, AlertCircle, ExternalLink } from "lucide-react";
+import { Button } from "@/components/ui/button";
 
-type Store = "shopee" | "mercadolivre" | "amazon"
+type StoreOffer = {
+  id: number;
+  url: string;
+  is_active: boolean;
+  current_price_cents: number | null;
+  platform: string;
+  product_id: string;
+};
 
-const STORE_LABELS: Record<Store, string> = {
-  shopee: "Shopee",
-  mercadolivre: "Mercado Livre",
-  amazon: "Amazon",
-}
-
-const REDIRECT_DELAY = 900 // um pouco mais rápido pra reduzir drop
-
-function getUtmFromUrl() {
-  const sp = new URLSearchParams(window.location.search)
-  const utm_source = sp.get("utm_source")
-  const utm_medium = sp.get("utm_medium")
-  const utm_campaign = sp.get("utm_campaign")
-  const utm_content = sp.get("utm_content")
-  const utm_term = sp.get("utm_term")
-  const fbclid = sp.get("fbclid")
-  const gclid = sp.get("gclid")
-  const ttclid = sp.get("ttclid")
-
-  return { utm_source, utm_medium, utm_campaign, utm_content, utm_term, fbclid, gclid, ttclid }
-}
-
-function detectTrafficFromUrlSignals(): "ads" | "organic" {
-  const { utm_source, utm_medium, fbclid, gclid, ttclid } = getUtmFromUrl()
-  const m = (utm_medium || "").toLowerCase()
-  const s = (utm_source || "").toLowerCase()
-
-  const looksPaid =
-    m === "paid" || m === "cpc" || m === "ads" || m === "paid_social" || m === "social_paid"
-
-  // inclui TikTok também
-  const looksSocial =
-    s === "fb" ||
-    s === "facebook" ||
-    s === "ig" ||
-    s === "instagram" ||
-    s === "tt" ||
-    s === "tiktok"
-
-  const hasClid = Boolean(fbclid || gclid || ttclid)
-
-  if (looksPaid || (looksSocial && (looksPaid || hasClid)) || hasClid) return "ads"
-  return "organic"
+// Gera um session_id único por sessão do browser
+function getSessionId(): string {
+  let sid = sessionStorage.getItem("_asid");
+  if (!sid) {
+    sid = Math.random().toString(36).slice(2) + Date.now().toString(36);
+    sessionStorage.setItem("_asid", sid);
+  }
+  return sid;
 }
 
 export default function BridgePage() {
-  const { store, slug } = useParams<{ store: string; slug: string }>()
-  const { data: product, isLoading } = useProduct(slug || "")
-
-  const [countdown, setCountdown] = useState(REDIRECT_DELAY / 1000)
-  const [redirectUrl, setRedirectUrl] = useState<string | null>(null)
-  const [hasRedirected, setHasRedirected] = useState(false)
-
-  const validStore = store as Store
-  const storeLabel = STORE_LABELS[validStore] || store
-
-  const isValidStore = useMemo(() => ["shopee", "mercadolivre", "amazon"].includes(validStore), [validStore])
-
-  const clickIdRef = useRef<string | null>(null)
+  const { store, slug } = useParams<{ store: string; slug: string }>();
+  const navigate = useNavigate();
+  const [error, setError] = useState<string | null>(null);
+  const [offerUrl, setOfferUrl] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    // ✅ planta o contexto de tráfego o mais cedo possível (agora inclui TikTok também via clickTracking.ts)
-    seedTrafficCtxFromUrl()
-
-    if (!product || hasRedirected) return
-    if (!isValidStore) return
-
-    const linkKey = `${validStore}_link` as keyof typeof product
-    const affiliateUrl = product[linkKey] as string | null
-    if (!affiliateUrl) return
-
-    // (opcional) mantém, mas o retorno não é usado aqui — ok para side-effect/debug
-    detectBrowser()
-
-    if (!clickIdRef.current) clickIdRef.current = generateClickId()
-    const clickId = clickIdRef.current
-
-    storeClickId(clickId, product.slug, validStore)
-    trackBridgeLoaded(validStore, product.slug)
-
-    // ✅ destino final (afiliado) com clickId + UTMs preservadas
-    let finalAffiliateUrl = appendClickId(affiliateUrl, clickId)
-    finalAffiliateUrl = preserveUtmParams(finalAffiliateUrl)
-
-    // ✅ classifica traffic pelo que veio na URL do anúncio (mais confiável que referer do in-app)
-    const traffic = detectTrafficFromUrlSignals()
-
-    // ✅ outbound oficial via /api/go (server-side)
-    const go = new URL("/api/go", window.location.origin)
-
-    // preferir o modo offer_id se você já usa no botão de compra
-    // aqui mantemos o modo legacy (url + product_id + store) porque você já tinha assim
-    go.searchParams.set("product_id", product.id)
-    go.searchParams.set("store", validStore)
-
-    // session_id = clickId (dedupe e funil)
-    go.searchParams.set("session_id", clickId)
-
-    // passa traffic pro server registrar corretamente
-    go.searchParams.set("traffic", traffic)
-
-    // passa a URL do afiliado
-    go.searchParams.set("url", finalAffiliateUrl)
-
-    setRedirectUrl(go.toString())
-
-    const countdownInterval = setInterval(() => {
-      setCountdown((prev) => {
-        if (prev <= 0.1) {
-          clearInterval(countdownInterval)
-          return 0
-        }
-        return prev - 0.1
-      })
-    }, 100)
-
-    const redirectTimeout = setTimeout(() => {
-      trackOutboundClick(validStore, product.slug, clickId)
-      setHasRedirected(true)
-      window.location.href = go.toString()
-    }, REDIRECT_DELAY)
-
-    return () => {
-      clearInterval(countdownInterval)
-      clearTimeout(redirectTimeout)
+    if (!store || !slug) {
+      navigate("/", { replace: true });
+      return;
     }
-  }, [product, validStore, hasRedirected, isValidStore])
 
-  const handleManualRedirect = () => {
-    if (!redirectUrl || hasRedirected || !product) return
+    let cancelled = false;
 
-    const clickId = clickIdRef.current || generateClickId()
-    clickIdRef.current = clickId
-    trackOutboundClick(validStore, product.slug, clickId)
+    const run = async () => {
+      try {
+        // Buscar produto pelo slug
+        const { data: product, error: pErr } = await supabase
+          .from("products")
+          .select("id, name")
+          .eq("slug", slug)
+          .eq("is_active", true)
+          .maybeSingle();
 
-    setHasRedirected(true)
-    window.location.href = redirectUrl
-  }
+        if (pErr || !product) {
+          setError("Produto não encontrado ou indisponível.");
+          setLoading(false);
+          return;
+        }
 
-  if (isLoading) {
+        // Buscar offer ativa para a loja
+        const { data: offer, error: oErr } = await supabase
+          .from("store_offers")
+          .select("id, url, is_active, current_price_cents, platform, product_id")
+          .eq("product_id", product.id)
+          .eq("platform", store.toLowerCase())
+          .eq("is_active", true)
+          .maybeSingle();
+
+        if (oErr || !offer || !offer.is_active) {
+          setError("Oferta indisponível para esta loja no momento.");
+          setLoading(false);
+          return;
+        }
+
+        if (cancelled) return;
+
+        setOfferUrl(offer.url);
+
+        // Q21: Registrar outbound ANTES de redirecionar
+        const params = new URLSearchParams(window.location.search);
+        const sessionId = getSessionId();
+
+        await supabase.from("product_outbounds").insert({
+          product_id: product.id,
+          store: store.toLowerCase(),
+          offer_id: offer.id,
+          price_at_click: offer.current_price_cents
+            ? offer.current_price_cents / 100
+            : null,
+          currency_at_click: "BRL",
+          referer: document.referrer || null,
+          user_agent: navigator.userAgent,
+          session_id: sessionId,
+          utm_source: params.get("utm_source"),
+          utm_medium: params.get("utm_medium"),
+          utm_campaign: params.get("utm_campaign"),
+          utm_content: params.get("utm_content"),
+          utm_term: params.get("utm_term"),
+          fbclid: params.get("fbclid"),
+          gclid: params.get("gclid"),
+          ttclid: params.get("ttclid"),
+          page_url: window.location.href,
+          traffic: document.referrer ? "organic" : "direct",
+        });
+
+        if (!cancelled) {
+          window.location.href = offer.url;
+        }
+      } catch (err) {
+        console.error("BridgePage error:", err);
+        setError("Erro ao redirecionar. Tente novamente.");
+        setLoading(false);
+      }
+    };
+
+    run();
+    return () => { cancelled = true; };
+  }, [store, slug, navigate]);
+
+  if (error) {
     return (
-      <div className="min-h-screen flex items-center justify-center bg-background p-4">
-        <div className="text-center space-y-4">
-          <Loader2 className="h-8 w-8 animate-spin text-primary mx-auto" />
-          <p className="text-muted-foreground">Carregando...</p>
+      <Layout seo={{ title: "Redirecionando... | Achadinhos LM", noindex: true }}>
+        <div className="flex flex-col items-center justify-center min-h-[60vh] gap-6 text-center px-4">
+          <AlertCircle className="h-12 w-12 text-muted-foreground" />
+          <div className="space-y-2">
+            <h1 className="text-xl font-semibold">Oferta indisponível</h1>
+            <p className="text-muted-foreground">{error}</p>
+          </div>
+          <div className="flex gap-3">
+            <Button variant="outline" onClick={() => navigate(-1)}>
+              Voltar
+            </Button>
+            <Button onClick={() => navigate("/")}>
+              Ver outros produtos
+            </Button>
+          </div>
+          {offerUrl && (
+            <a
+              href={offerUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="flex items-center gap-1 text-sm text-primary underline underline-offset-4"
+            >
+              Acessar oferta diretamente <ExternalLink className="h-3.5 w-3.5" />
+            </a>
+          )}
         </div>
-      </div>
-    )
-  }
-
-  if (!product) {
-    return (
-      <div className="min-h-screen flex items-center justify-center bg-background p-4">
-        <div className="text-center space-y-4">
-          <span className="text-4xl">😢</span>
-          <h1 className="text-xl font-semibold text-foreground">Produto não encontrado</h1>
-          <Button asChild>
-            <Link to="/">Voltar ao início</Link>
-          </Button>
-        </div>
-      </div>
-    )
-  }
-
-  if (!isValidStore) {
-    return (
-      <div className="min-h-screen flex items-center justify-center bg-background p-4">
-        <div className="text-center space-y-4">
-          <span className="text-4xl">🚫</span>
-          <h1 className="text-xl font-semibold text-foreground">Loja inválida</h1>
-          <Button asChild>
-            <Link to={`/product/${product.slug}`}>Voltar ao produto</Link>
-          </Button>
-        </div>
-      </div>
-    )
-  }
-
-  const linkKey = `${validStore}_link` as keyof typeof product
-  const hasLink = !!product[linkKey]
-
-  if (!hasLink) {
-    return (
-      <div className="min-h-screen flex items-center justify-center bg-background p-4">
-        <div className="text-center space-y-4">
-          <span className="text-4xl">🚫</span>
-          <h1 className="text-xl font-semibold text-foreground">Link indisponível</h1>
-          <p className="text-muted-foreground">Este produto não está disponível na {storeLabel}.</p>
-          <Button asChild>
-            <Link to={`/product/${product.slug}`}>Ver outras opções</Link>
-          </Button>
-        </div>
-      </div>
-    )
+      </Layout>
+    );
   }
 
   return (
-    <div className="min-h-screen flex items-center justify-center bg-background p-4">
-      <div className="max-w-sm w-full text-center space-y-6 animate-fade-in">
-        <div className="space-y-2">
-          <span className="text-4xl">🛍️</span>
-          <h1 className="text-lg font-semibold text-foreground">Redirecionando para {storeLabel}</h1>
-        </div>
-
-        <div className="bg-card rounded-2xl p-4 shadow-card space-y-3">
-          <div className="w-24 h-24 mx-auto rounded-xl overflow-hidden bg-muted">
-            <img
-              src={product.image_urls?.[0] || "/placeholder.svg"}
-              alt={product.name}
-              className="w-full h-full object-cover"
-            />
-          </div>
-          <p className="font-medium text-foreground line-clamp-2">{product.name}</p>
-          <p className="text-primary font-bold">{product.price_label}</p>
-        </div>
-
-        <div className="space-y-3">
-          <div className="relative h-1 bg-muted rounded-full overflow-hidden">
-            <div
-              className="absolute left-0 top-0 h-full bg-primary transition-all duration-100 ease-linear"
-              style={{
-                width: `${((REDIRECT_DELAY / 1000 - countdown) / (REDIRECT_DELAY / 1000)) * 100}%`,
-              }}
-            />
-          </div>
-          <p className="text-sm text-muted-foreground">Aguarde... {countdown.toFixed(1)}s</p>
-        </div>
-
-        <Button onClick={handleManualRedirect} variant="outline" size="lg" className="w-full" disabled={!redirectUrl}>
-          Se não redirecionar, toque aqui
-          <ExternalLink className="ml-2 h-4 w-4" />
-        </Button>
-
-        <Link
-          to={`/product/${product.slug}`}
-          className="text-sm text-muted-foreground hover:text-foreground transition-colors"
-        >
-          ← Voltar ao produto
-        </Link>
+    <Layout seo={{ title: "Redirecionando... | Achadinhos LM", noindex: true }}>
+      <div className="flex flex-col items-center justify-center min-h-[60vh] gap-4 text-center">
+        <Loader2 className="h-8 w-8 animate-spin text-primary" />
+        <p className="text-muted-foreground text-sm">
+          Redirecionando para a oferta...
+        </p>
+        {offerUrl && (
+          <a
+            href={offerUrl}
+            className="text-xs text-muted-foreground underline underline-offset-4 mt-2"
+          >
+            Clique aqui se não for redirecionado automaticamente
+          </a>
+        )}
       </div>
-    </div>
-  )
+    </Layout>
+  );
 }

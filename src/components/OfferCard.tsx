@@ -1,85 +1,100 @@
-import type { Offer } from "@/hooks/useRecentOffers"
+import { type RecentOffer } from "@/hooks/useRecentOffers";
+import { Badge } from "@/components/ui/badge";
+import { ExternalLink } from "lucide-react";
 
-const PLATFORM_BADGE: Record<string, { label: string; bg: string; text: string }> = {
-  shopee: { label: "S", bg: "bg-[#FF6B3D]", text: "text-white" },
-  ml: { label: "M", bg: "bg-[#FFD54A]", text: "text-black" },
-  amazon: { label: "A", bg: "bg-[#F5A623]", text: "text-white" },
+const PLATFORM_LABELS: Record<string, { label: string; color: string }> = {
+  shopee: { label: "Shopee", color: "bg-orange-100 text-orange-700" },
+  mercadolivre: { label: "ML", color: "bg-yellow-100 text-yellow-700" },
+  ml: { label: "ML", color: "bg-yellow-100 text-yellow-700" },
+  amazon: { label: "Amazon", color: "bg-blue-100 text-blue-700" },
+};
+
+function formatBRL(value: number | null) {
+  if (value == null) return null;
+  return value.toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
 }
 
-function formatCurrency(value: number): string {
-  return value.toLocaleString("pt-BR", { style: "currency", currency: "BRL" })
-}
+type Props = {
+  offer: RecentOffer;
+};
 
-interface OfferCardProps {
-  offer: Offer
-}
+export function OfferCard({ offer }: Props) {
+  const platform = PLATFORM_LABELS[offer.platform?.toLowerCase()] ?? {
+    label: offer.platform,
+    color: "bg-muted text-muted-foreground",
+  };
 
-export function OfferCard({ offer }: OfferCardProps) {
-  const badge = PLATFORM_BADGE[offer.platform] ?? { label: offer.platform[0]?.toUpperCase() ?? "?", bg: "bg-muted", text: "text-foreground" }
-  const displayPrice = offer.final_price ?? offer.price
-  const hasDiscount = offer.old_price != null && offer.old_price > displayPrice
+  const displayPrice = offer.final_price ?? offer.price;
+  const hasDiscount =
+    offer.discount_pct != null && offer.discount_pct >= 5;
 
   return (
-    <div className="bg-white rounded-2xl shadow-sm hover:shadow-md transition overflow-hidden flex flex-col h-full">
-      {/* IMAGEM */}
-      <div className="p-3">
-        <div className="relative aspect-square rounded-xl bg-muted/40 overflow-hidden">
+    <a
+      href={offer.url}
+      target="_blank"
+      rel="noopener noreferrer"
+      className="flex flex-col bg-background rounded-xl border border-border overflow-hidden hover:shadow-md transition-shadow group shrink-0 w-[160px] sm:w-[180px]"
+    >
+      {/* Imagem */}
+      <div className="relative aspect-square bg-muted overflow-hidden">
+        {offer.image_url ? (
           <img
-            src={offer.image_url || "/placeholder.svg"}
+            src={offer.image_url}
             alt={offer.title}
-            className="w-full h-full object-contain"
             loading="lazy"
+            className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
+            onError={(e) => {
+              (e.target as HTMLImageElement).style.display = "none";
+            }}
           />
+        ) : (
+          <div className="w-full h-full flex items-center justify-center text-3xl">
+            🛍️
+          </div>
+        )}
+        {/* Badge desconto */}
+        {hasDiscount && (
+          <div className="absolute top-2 left-2 bg-red-500 text-white text-[10px] font-bold px-1.5 py-0.5 rounded-md">
+            -{Math.round(offer.discount_pct!)}%
+          </div>
+        )}
+        {/* Badge plataforma */}
+        <div
+          className={`absolute top-2 right-2 text-[10px] font-semibold px-1.5 py-0.5 rounded-md ${platform.color}`}
+        >
+          {platform.label}
+        </div>
+      </div>
 
-          {/* Badge plataforma */}
-          <span
-            className={`absolute top-2 left-2 w-6 h-6 rounded-full ${badge.bg} ${badge.text} text-[11px] font-bold flex items-center justify-center shadow-sm`}
-          >
-            {badge.label}
-          </span>
+      {/* Conteúdo */}
+      <div className="p-2.5 flex flex-col gap-1 flex-1">
+        <p className="text-xs text-foreground font-medium leading-snug line-clamp-2">
+          {offer.title}
+        </p>
 
-          {/* Badge desconto */}
-          {offer.discount_pct != null && offer.discount_pct > 0 && (
-            <span className="absolute top-2 right-2 bg-red-500 text-white text-[10px] font-bold px-1.5 py-0.5 rounded-md">
-              -{Math.round(offer.discount_pct)}%
-            </span>
+        <div className="mt-auto pt-1">
+          {offer.old_price && offer.old_price > (displayPrice ?? 0) && (
+            <p className="text-[10px] text-muted-foreground line-through">
+              {formatBRL(offer.old_price)}
+            </p>
+          )}
+          {displayPrice != null && (
+            <p className="text-sm font-bold text-green-600">
+              {formatBRL(displayPrice)}
+            </p>
+          )}
+          {offer.coupon_code && (
+            <p className="text-[10px] text-primary font-mono mt-0.5">
+              🎟 {offer.coupon_code}
+            </p>
           )}
         </div>
       </div>
 
-      {/* CONTEÚDO */}
-      <div className="px-4 pb-4 flex flex-col flex-1">
-        <h3 className="text-[13px] font-medium leading-snug text-foreground line-clamp-2 min-h-[2.5rem] mb-2">
-          {offer.title}
-        </h3>
-
-        <div className="mt-auto pt-1 space-y-3">
-          <div>
-            {hasDiscount && (
-              <span className="text-[11px] text-muted-foreground line-through block">
-                {formatCurrency(offer.old_price!)}
-              </span>
-            )}
-            <span className="text-[18px] font-bold text-emerald-700 leading-tight block">
-              {formatCurrency(displayPrice)}
-            </span>
-            {offer.coupon_code && (
-              <span className="inline-block mt-1 text-[10px] bg-amber-100 text-amber-800 font-semibold px-2 py-0.5 rounded-md">
-                Cupom: {offer.coupon_code}
-              </span>
-            )}
-          </div>
-
-          <a
-            href={offer.url}
-            target="_blank"
-            rel="noopener noreferrer sponsored"
-            className="block w-full text-center bg-primary text-primary-foreground text-sm font-medium py-2 rounded-lg hover:opacity-90 transition"
-          >
-            Ver oferta
-          </a>
-        </div>
+      {/* Footer */}
+      <div className="px-2.5 pb-2 flex items-center gap-1 text-[10px] text-primary font-medium">
+        Ver oferta <ExternalLink className="h-2.5 w-2.5" />
       </div>
-    </div>
-  )
+    </a>
+  );
 }

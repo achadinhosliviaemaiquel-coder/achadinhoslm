@@ -1,147 +1,225 @@
-import { Layout } from "@/components/Layout"
-import { Badge } from "@/components/ui/badge"
-import { Star } from "lucide-react"
+import { useQuery } from "@tanstack/react-query";
+import { supabase } from "@/integrations/supabase/client";
+import { Layout } from "@/components/Layout";
+import { Skeleton } from "@/components/ui/skeleton";
+import { Star, ExternalLink, Instagram } from "lucide-react";
 
-type ReviewProduct = {
-  id: number
-  name: string
-  image: string
-  category: string
-  rating: number
-  reviewUrl: string
+type ProductWithReview = {
+  id: string;
+  name: string;
+  slug: string;
+  category: string;
+  description: string | null;
+  image_urls: string[];
+  review_url: string;
+  shopee_price: number | null;
+  mercadolivre_price: number | null;
+  amazon_price: number | null;
+  shopee_link: string | null;
+  mercadolivre_link: string | null;
+  amazon_link: string | null;
+};
+
+function useReviewProducts() {
+  return useQuery({
+    queryKey: ["review-products"],
+    queryFn: async (): Promise<ProductWithReview[]> => {
+      const { data, error } = await supabase
+        .from("products")
+        .select(
+          "id, name, slug, category, description, image_urls, review_url, shopee_price, mercadolivre_price, amazon_price, shopee_link, mercadolivre_link, amazon_link"
+        )
+        .not("review_url", "is", null)
+        .eq("is_active", true)
+        .order("updated_at", { ascending: false });
+
+      if (error) throw error;
+      return (data as ProductWithReview[]) ?? [];
+    },
+    staleTime: 1000 * 60 * 10,
+  });
 }
 
-const MOCK_REVIEWS: ReviewProduct[] = [
-  {
-    id: 1,
-    name: "Protetor Solar Facial FPS 60 - La Roche-Posay",
-    image: "/placeholder.svg",
-    category: "Beleza",
-    rating: 5,
-    reviewUrl: "#",
-  },
-  {
-    id: 2,
-    name: "Fone de Ouvido Bluetooth sem fio",
-    image: "/placeholder.svg",
-    category: "Eletrônicos",
-    rating: 4,
-    reviewUrl: "#",
-  },
-  {
-    id: 3,
-    name: "Suplemento Vitamina C 500mg",
-    image: "/placeholder.svg",
-    category: "Suplementos",
-    rating: 5,
-    reviewUrl: "#",
-  },
-  {
-    id: 4,
-    name: "Kit Skincare Hidratante + Sérum",
-    image: "/placeholder.svg",
-    category: "Beleza",
-    rating: 4,
-    reviewUrl: "#",
-  },
-  {
-    id: 5,
-    name: "Panela de Pressão Elétrica 5L",
-    image: "/placeholder.svg",
-    category: "Casa",
-    rating: 4,
-    reviewUrl: "#",
-  },
-  {
-    id: 6,
-    name: "Tênis Running Feminino Leve",
-    image: "/placeholder.svg",
-    category: "Moda",
-    rating: 5,
-    reviewUrl: "#",
-  },
-]
-
-function StarRating({ rating }: { rating: number }) {
-  return (
-    <div className="flex gap-0.5">
-      {[1, 2, 3, 4, 5].map((star) => (
-        <Star
-          key={star}
-          className={`h-4 w-4 ${star <= rating ? "fill-amber-400 text-amber-400" : "fill-muted text-muted"}`}
-        />
-      ))}
-    </div>
-  )
+function lowestPrice(p: ProductWithReview): number | null {
+  const prices = [p.shopee_price, p.mercadolivre_price, p.amazon_price].filter(
+    (v): v is number => v != null && v > 0
+  );
+  return prices.length > 0 ? Math.min(...prices) : null;
 }
 
-function ReviewCard({ product }: { product: ReviewProduct }) {
+function formatBRL(value: number) {
+  return value.toLocaleString("pt-BR", { style: "currency", currency: "BRL" });
+}
+
+function ReviewCard({ product }: { product: ProductWithReview }) {
+  const price = lowestPrice(product);
+  const firstImage = product.image_urls?.[0];
+
   return (
-    <div className="bg-white rounded-2xl shadow-sm hover:shadow-md transition overflow-hidden flex flex-col">
-      <div className="p-3">
-        <div className="aspect-square rounded-xl bg-muted/40 overflow-hidden">
+    <div className="bg-background rounded-2xl border border-border overflow-hidden hover:shadow-md transition-shadow">
+      {/* Imagem */}
+      <div className="relative aspect-square bg-muted overflow-hidden">
+        {firstImage ? (
           <img
-            src={product.image}
+            src={firstImage}
             alt={product.name}
-            className="w-full h-full object-contain"
             loading="lazy"
+            className="w-full h-full object-cover"
+            onError={(e) => {
+              (e.target as HTMLImageElement).style.display = "none";
+            }}
           />
+        ) : (
+          <div className="w-full h-full flex items-center justify-center text-4xl">
+            🛍️
+          </div>
+        )}
+        {/* Badge Instagram */}
+        <div className="absolute top-2 right-2 bg-gradient-to-br from-purple-500 to-pink-500 p-1.5 rounded-lg">
+          <Instagram className="h-3.5 w-3.5 text-white" />
         </div>
       </div>
 
-      <div className="px-4 pb-4 flex flex-col flex-1">
-        <Badge className="text-[10px] bg-muted text-muted-foreground font-medium px-2 py-0.5 rounded-md w-fit mb-2">
-          {product.category}
-        </Badge>
+      {/* Conteúdo */}
+      <div className="p-4 space-y-3">
+        <div>
+          <p className="text-xs text-muted-foreground capitalize mb-1">
+            {product.category}
+          </p>
+          <h3 className="font-semibold text-sm leading-snug line-clamp-2">
+            {product.name}
+          </h3>
+        </div>
 
-        <h3 className="text-[14px] font-medium leading-snug text-foreground line-clamp-2 mb-2">
-          {product.name}
-        </h3>
+        {product.description && (
+          <p className="text-xs text-muted-foreground line-clamp-2">
+            {product.description}
+          </p>
+        )}
 
-        <div className="mt-auto pt-2 space-y-3">
-          <StarRating rating={product.rating} />
+        {/* Estrelas fixas por enquanto — futuro: dinâmicas */}
+        <div className="flex items-center gap-1">
+          {[1, 2, 3, 4, 5].map((i) => (
+            <Star
+              key={i}
+              className={`h-3.5 w-3.5 ${
+                i <= 5
+                  ? "fill-amber-400 text-amber-400"
+                  : "text-muted-foreground"
+              }`}
+            />
+          ))}
+          <span className="text-xs text-muted-foreground ml-1">Recomendo</span>
+        </div>
 
-          <a
-            href={product.reviewUrl}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="block w-full text-center bg-primary text-primary-foreground text-sm font-medium py-2 rounded-lg hover:opacity-90 transition"
-          >
-            Ver review
-          </a>
+        {price != null && (
+          <p className="text-sm font-bold text-green-600">
+            A partir de {formatBRL(price)}
+          </p>
+        )}
+
+        {/* Botão */}
+        <a
+          href={product.review_url}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="flex items-center gap-1.5 text-xs font-medium text-primary hover:underline underline-offset-4"
+        >
+          <Instagram className="h-3.5 w-3.5" />
+          Ver review no Instagram
+          <ExternalLink className="h-3 w-3" />
+        </a>
+
+        {/* Links de compra */}
+        <div className="flex gap-2 flex-wrap pt-1">
+          {product.shopee_link && (
+            <a
+              href={product.shopee_link}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-[10px] font-medium bg-orange-100 text-orange-700 px-2 py-1 rounded-full hover:bg-orange-200 transition-colors"
+            >
+              Shopee
+            </a>
+          )}
+          {product.mercadolivre_link && (
+            <a
+              href={product.mercadolivre_link}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-[10px] font-medium bg-yellow-100 text-yellow-700 px-2 py-1 rounded-full hover:bg-yellow-200 transition-colors"
+            >
+              Mercado Livre
+            </a>
+          )}
+          {product.amazon_link && (
+            <a
+              href={product.amazon_link}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="text-[10px] font-medium bg-blue-100 text-blue-700 px-2 py-1 rounded-full hover:bg-blue-200 transition-colors"
+            >
+              Amazon
+            </a>
+          )}
         </div>
       </div>
     </div>
-  )
+  );
 }
 
 export default function ReviewsPage() {
+  const { data: products, isLoading, error } = useReviewProducts();
+
   return (
     <Layout
       seo={{
         title: "Reviews de Produtos | Achadinhos LM",
         description:
-          "Avaliações e reviews honestos dos melhores produtos da Shopee, Amazon e Mercado Livre. Confira antes de comprar!",
+          "Confira os reviews de produtos testados e aprovados pelo Achadinhos LM. Avaliações honestas com links para comprar nas melhores lojas.",
         canonical: "/reviews",
-        ogType: "website",
       }}
     >
       <div className="space-y-8">
-        <section className="text-center space-y-2">
-          <h1 className="text-2xl font-bold">Reviews de Produtos</h1>
-          <p className="text-muted-foreground">
-            Avaliações honestas para você comprar com confiança.
+        {/* Header da página */}
+        <section className="space-y-2">
+          <h1 className="text-2xl font-bold">📹 Reviews</h1>
+          <p className="text-muted-foreground text-sm">
+            Produtos que testei pessoalmente e recomendo. Clique em "Ver review"
+            para assistir no Instagram.
           </p>
         </section>
 
-        <section>
-          <div className="grid grid-cols-2 sm:grid-cols-3 gap-4">
-            {MOCK_REVIEWS.map((product) => (
+        {/* Grid */}
+        {isLoading ? (
+          <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-4">
+            {[...Array(8)].map((_, i) => (
+              <div key={i} className="space-y-3">
+                <Skeleton className="aspect-square rounded-2xl" />
+                <Skeleton className="h-4 w-3/4" />
+                <Skeleton className="h-4 w-1/2" />
+              </div>
+            ))}
+          </div>
+        ) : error ? (
+          <p className="text-muted-foreground text-center py-12">
+            Erro ao carregar reviews. Tente novamente.
+          </p>
+        ) : products && products.length > 0 ? (
+          <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-4">
+            {products.map((product) => (
               <ReviewCard key={product.id} product={product} />
             ))}
           </div>
-        </section>
+        ) : (
+          <div className="text-center py-16 space-y-3">
+            <span className="text-5xl">📹</span>
+            <p className="text-muted-foreground">
+              Nenhum review publicado ainda. Em breve!
+            </p>
+          </div>
+        )}
       </div>
     </Layout>
-  )
+  );
 }

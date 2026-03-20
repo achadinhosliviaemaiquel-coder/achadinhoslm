@@ -1,38 +1,66 @@
-import { useQuery } from "@tanstack/react-query"
-import { getSupabase } from "@/integrations/supabase/client"
-import type { Product } from "@/types/product"
+import { useQuery } from "@tanstack/react-query";
+import { supabase } from "@/integrations/supabase/client";
+
+type FeaturedProduct = {
+  id: string;
+  name: string;
+  slug: string;
+  category: string;
+  subcategory: string | null;
+  description: string | null;
+  benefits: string[];
+  price_label: string;
+  urgency_label: string | null;
+  image_urls: string[];
+  shopee_link: string | null;
+  mercadolivre_link: string | null;
+  amazon_link: string | null;
+  shopee_price: number | null;
+  mercadolivre_price: number | null;
+  amazon_price: number | null;
+  brand_slug: string | null;
+  review_url: string | null;
+  outbounds_7d: number;
+  views_7d: number;
+};
 
 export function useFeaturedProducts(limit = 6) {
   return useQuery({
     queryKey: ["featured-products", limit],
-    queryFn: async (): Promise<Product[]> => {
-      const supabase = getSupabase()
+    queryFn: async (): Promise<FeaturedProduct[]> => {
+      // Q32: get_featured_products retorna IDs rankeados por outbounds
+      const { data: ranked, error: rankErr } = await supabase
+        .rpc("get_featured_products", { p_limit: limit });
 
-      // 1) Pega ranking por cliques reais (7d), com fallback por views (7d)
-      const { data: ranking, error: rankingError } = await supabase.rpc("get_featured_products", {
-        p_limit: limit,
-      })
+      if (rankErr) throw rankErr;
+      if (!ranked || ranked.length === 0) return [];
 
-      if (rankingError) throw rankingError
+      const ids = ranked.map((r: any) => r.product_id as string);
 
-      const productIds = (ranking ?? []).map((r: any) => r.product_id).filter(Boolean)
-      if (productIds.length === 0) return []
-
-      // 2) Busca os produtos completos
-      const { data: products, error: productsError } = await supabase
+      const { data: products, error: prodErr } = await supabase
         .from("products")
-        .select("*")
-        .in("id", productIds)
+        .select(
+          "id, name, slug, category, subcategory, description, benefits, price_label, urgency_label, image_urls, shopee_link, mercadolivre_link, amazon_link, shopee_price, mercadolivre_price, amazon_price, brand_slug, review_url"
+        )
+        .in("id", ids)
+        .eq("is_active", true);
 
-      if (productsError) throw productsError
+      if (prodErr) throw prodErr;
 
-      // 3) Reordena para manter a ordem do ranking (o IN não garante order)
-      const byId = new Map<string, Product>()
-      for (const p of products ?? []) byId.set((p as any).id, p as Product)
+      const rankMap = new Map(ranked.map((r: any) => [r.product_id, r]));
 
-      return productIds.map((id: string) => byId.get(id)).filter(Boolean) as Product[]
+      return (products ?? [])
+        .map((p) => {
+          const rank: any = rankMap.get(p.id) ?? {};
+          return {
+            ...p,
+            outbounds_7d: Number(rank.outbounds_7d ?? 0),
+            views_7d: Number(rank.views_7d ?? 0),
+          };
+        })
+        .sort((a, b) => b.outbounds_7d - a.outbounds_7d);
     },
-    staleTime: 60_000,
-    refetchOnWindowFocus: false,
-  })
+    staleTime: 1000 * 60 * 10,  // Q32: 10 minutos de cache
+    gcTime: 1000 * 60 * 30,
+  });
 }
