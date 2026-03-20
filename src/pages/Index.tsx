@@ -176,9 +176,6 @@ export default function Index() {
         </section>
 
         {/* ——— POSTADAS AGORA ——— */}
-        {(hasOffers || loadingOffers) && (
-          
-        )}
 
         {loadingOffers && (
           <section className="space-y-3">
