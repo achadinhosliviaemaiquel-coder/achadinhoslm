@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState, useCallback } from 'react'
 
 // ─── Constantes ────────────────────────────────────────────────────────────
-const PIXEL_ID      = '751361274435328'
+const PIXEL_ID      = '1878213216171367'
 const WHATSAPP_LINK = 'https://chat.whatsapp.com/Bvyh4RUuNA32qVtlHgiZJu'
 
 // ─── Tipos ─────────────────────────────────────────────────────────────────
