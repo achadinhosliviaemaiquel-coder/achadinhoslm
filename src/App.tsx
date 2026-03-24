@@ -27,6 +27,7 @@ const NotFound = lazy(() => import("./pages/NotFound"))
 const SearchPage = lazy(() => import("@/pages/SearchPage"))
 const BrandPage = lazy(() => import("@/pages/BrandPage"))
 const ReviewsPage = lazy(() => import("@/pages/ReviewsPage")) // Q59
+const AdsPage = lazy(() => import("./pages/Ads"))
 
 const App = () => {
   useEffect(() => {
@@ -52,6 +53,7 @@ const App = () => {
               <Route path="/category/:category" element={<CategoryPage />} />
               <Route path="/go/:store/:slug" element={<BridgePage />} />
               <Route path="/search" element={<SearchPage />} />
+              <Route path="/ads" element={<AdsPage />} />
               <Route path="/reviews" element={<ReviewsPage />} /> {/* Q59 */}
               <Route path="/login" element={<LoginPage />} />
               {/* 🔒 ADMIN */}
