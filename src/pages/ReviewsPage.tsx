@@ -175,9 +175,9 @@ export default function ReviewsPage() {
   return (
     <Layout
       seo={{
-        title: "Reviews de Produtos | Achadinhos LM",
+        title: "Reviews de Produtos | Saiu Promoção",
         description:
-          "Confira os reviews de produtos testados e aprovados pelo Achadinhos LM. Avaliações honestas com links para comprar nas melhores lojas.",
+          "Confira os reviews de produtos testados e aprovados pelo Saiu Promoção. Avaliações honestas com links para comprar nas melhores lojas.",
         canonical: "/reviews",
       }}
     >

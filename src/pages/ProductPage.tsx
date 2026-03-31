@@ -155,7 +155,7 @@ function toAbsUrl(pathOrUrl: string) {
   const v = (pathOrUrl || "").trim()
   if (!v) return ""
   if (/^https?:\/\//i.test(v)) return v
-  return `https://achadinhoslm.com.br${v.startsWith("/") ? "" : "/"}${v}`
+  return `https://saiupromo.com.br${v.startsWith("/") ? "" : "/"}${v}`
 }
 
 function isInAppBrowser() {
@@ -319,7 +319,7 @@ export default function ProductPage() {
             priceCurrency: "BRL",
             price,
             availability: "https://schema.org/InStock",
-            url: `https://achadinhoslm.com.br/product/${product.slug}`,
+            url: `https://saiupromo.com.br/product/${product.slug}`,
           }
         : undefined
 
@@ -331,7 +331,7 @@ export default function ProductPage() {
       name: product.name,
       description: product.description || product.name,
       sku: product.id,
-      url: `https://achadinhoslm.com.br/product/${product.slug}`,
+      url: `https://saiupromo.com.br/product/${product.slug}`,
       image: img0 ? [img0] : undefined,
       category: CATEGORY_LABELS[product.category] || product.category,
       brand: (product as any)?.brand ? { "@type": "Brand", name: (product as any).brand } : undefined,
@@ -378,7 +378,7 @@ export default function ProductPage() {
     return (
       <Layout
         seo={{
-          title: "Produto não encontrado | Achadinhos LM",
+          title: "Produto não encontrado | Saiu Promoção",
           description: "Produto não encontrado.",
           canonical: `/product/${slug || ""}`,
           ogImage: "/og-home.jpg",
@@ -410,7 +410,7 @@ export default function ProductPage() {
         { name: product.name, url: `/product/${product.slug}` },
       ]}
       seo={{
-        title: `${product.name}${Number.isFinite(finalPrice) ? ` | a partir de R$\u00a0${finalPrice.toFixed(2).replace(".", ",")}` : ""} | Achadinhos LM`,
+        title: `${product.name}${Number.isFinite(finalPrice) ? ` | a partir de R$\u00a0${finalPrice.toFixed(2).replace(".", ",")}` : ""} | Saiu Promoção`,
         description: (product.description || `Confira onde comprar ${product.name} com o menor preço.`).slice(0, 160),
         canonical: `/product/${product.slug}`,
         ogImage: product.image_urls?.[0] || "/og-home.jpg",

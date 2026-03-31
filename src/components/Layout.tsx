@@ -31,10 +31,10 @@ interface LayoutProps {
 function getBaseUrlSafe() {
   try {
     const host = window.location.hostname;
-    if (host.includes("vercel.app")) return "https://achadinhoslm.vercel.app";
-    return "https://achadinhoslm.com.br";
+    if (host.includes("vercel.app")) return "https://saiupromo.vercel.app";
+    return "https://saiupromo.com.br";
   } catch {
-    return "https://achadinhoslm.com.br";
+    return "https://saiupromo.com.br";
   }
 }
 
@@ -65,7 +65,7 @@ export function Layout({
     ? toAbsoluteUrl(BASE_URL, seo.canonical)
     : toAbsoluteUrl(BASE_URL, canonicalPathDefault);
 
-  const title = seo?.title || "Achadinhos LM & Promoções";
+  const title = seo?.title || "Saiu Promoção & Promoções";
   const description =
     seo?.description ||
     "Ofertas da Shopee, Amazon e Mercado Livre todos os dias.";
@@ -91,7 +91,7 @@ export function Layout({
   const websiteSchema = {
     "@context": "https://schema.org",
     "@type": "WebSite",
-    name: "Achadinhos LM",
+    name: "Saiu Promoção",
     url: BASE_URL,
     potentialAction: {
       "@type": "SearchAction",
@@ -103,7 +103,7 @@ export function Layout({
   const organizationSchema = {
     "@context": "https://schema.org",
     "@type": "Organization",
-    name: "Achadinhos LM",
+    name: "Saiu Promoção",
     url: BASE_URL,
     sameAs: [
       "https://www.instagram.com/achadosliviamaiquel/",
@@ -143,7 +143,7 @@ export function Layout({
         <meta name="theme-color" content="#ffffff" />
         <link rel="canonical" href={canonicalUrl} />
         {/* Open Graph */}
-        <meta property="og:site_name" content="Achadinhos LM" />
+        <meta property="og:site_name" content="Saiu Promoção" />
         <meta property="og:locale" content="pt_BR" />
         <meta property="og:type" content={ogType} />
         <meta property="og:url" content={canonicalUrl} />

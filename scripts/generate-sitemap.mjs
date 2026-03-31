@@ -2,7 +2,7 @@ import "dotenv/config";
 import { createClient } from "@supabase/supabase-js";
 import fs from "fs";
 
-const SITE_URL = "https://achadinhoslm.com.br";
+const SITE_URL = "https://saiupromo.com.br";
 
 const supabaseUrl = process.env.VITE_SUPABASE_URL;
 const supabaseAnonKey = process.env.VITE_SUPABASE_ANON_KEY;

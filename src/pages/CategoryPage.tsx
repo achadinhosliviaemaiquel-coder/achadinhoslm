@@ -54,7 +54,7 @@ export default function CategoryPage() {
   return (
     <Layout
       seo={{
-        title: `${categoryLabel} em Promoção | Achadinhos LM`,
+        title: `${categoryLabel} em Promoção | Saiu Promoção`,
         description: `Confira os melhores produtos de ${categoryLabel} com preços baixos na Shopee, Amazon e Mercado Livre.`,
         canonical: `/category/${category}`,
       }}

@@ -190,7 +190,7 @@ export default function Ads(): JSX.Element {
 
   useEffect(() => {
     initPixel()
-    const viewTimer = setTimeout(() => px.viewContent('Grupo WhatsApp Achadinhos LM'), 2000)
+    const viewTimer = setTimeout(() => px.viewContent('Grupo WhatsApp Saiu Promoção'), 2000)
     requestAnimationFrame(() => setVisible(true))
     const target = 4817, duration = 1800, start = Date.now()
     const counter = setInterval(() => {
@@ -417,8 +417,8 @@ export default function Ads(): JSX.Element {
         </section>
 
         <footer className="ads-footer">
-          © {new Date().getFullYear()} Achadinhos LM &nbsp;·&nbsp;{' '}
-          <a href="https://achadinhoslm.com.br">achadinhoslm.com.br</a><br />
+          © {new Date().getFullYear()} Saiu Promoção &nbsp;·&nbsp;{' '}
+          <a href="https://saiupromo.com.br">saiupromo.com.br</a><br />
           Este site pode conter links de afiliados. Ao comprar, você apoia o canal sem pagar a mais por isso.
         </footer>
 

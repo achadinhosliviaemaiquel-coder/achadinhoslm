@@ -7,4 +7,4 @@ Disallow: /login
 Disallow: /dashboard
 Disallow: /api
 
-Sitemap: https://achadinhoslm.com.br/sitemap.xml
+Sitemap: https://saiupromo.com.br/sitemap.xml

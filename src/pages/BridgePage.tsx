@@ -118,7 +118,7 @@ export default function BridgePage() {
 
   if (error) {
     return (
-      <Layout seo={{ title: "Redirecionando... | Achadinhos LM", noindex: true }}>
+      <Layout seo={{ title: "Redirecionando... | Saiu Promoção", noindex: true }}>
         <div className="flex flex-col items-center justify-center min-h-[60vh] gap-6 text-center px-4">
           <AlertCircle className="h-12 w-12 text-muted-foreground" />
           <div className="space-y-2">
@@ -149,7 +149,7 @@ export default function BridgePage() {
   }
 
   return (
-    <Layout seo={{ title: "Redirecionando... | Achadinhos LM", noindex: true }}>
+    <Layout seo={{ title: "Redirecionando... | Saiu Promoção", noindex: true }}>
       <div className="flex flex-col items-center justify-center min-h-[60vh] gap-4 text-center">
         <Loader2 className="h-8 w-8 animate-spin text-primary" />
         <p className="text-muted-foreground text-sm">

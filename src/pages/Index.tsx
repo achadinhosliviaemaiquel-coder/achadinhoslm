@@ -1,14 +1,11 @@
-import { type ReactNode } from "react";
 import { Link } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { Layout } from "@/components/Layout";
 import { ProductCard } from "@/components/ProductCard";
-import { CategoryCard } from "@/components/CategoryCard";
 import { OfferCard } from "@/components/OfferCard";
 import { useFeaturedProducts } from "@/hooks/useFeaturedProducts";
 import { useRecentOffers } from "@/hooks/useRecentOffers";
 import { getSupabase } from "@/integrations/supabase/client";
-import { CATEGORY_LABELS, type ProductCategory } from "@/types/product";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Star, Instagram, ExternalLink } from "lucide-react";
 import {
@@ -21,47 +18,8 @@ import {
 
 const supabase = getSupabase();
 
-const CATEGORIES = (Object.keys(CATEGORY_LABELS) as ProductCategory[]).sort(
-  (a, b) => CATEGORY_LABELS[a].localeCompare(CATEGORY_LABELS[b])
-);
 
-// Barra separadora de seção (igual ao mockup)
-function SectionLabel({ children }: { children: ReactNode }) {
-  return (
-    <div className="-mx-4 sm:-mx-6 lg:-mx-8 -my-3 px-4 py-1 bg-muted border-y border-border">
-      <span className="text-[10px] font-medium text-muted-foreground uppercase tracking-widest">
-        {children}
-      </span>
-    </div>
-  );
-}
 
-const WhatsAppIcon = () => (
-  <svg width="22" height="22" viewBox="0 0 32 32" fill="currentColor">
-    <path d="M16 .4C7.4.4.4 7.4.4 16c0 2.8.7 5.6 2.1 8L.3 31.7l7.9-2.1c2.3 1.3 5 2 7.8 2 8.6 0 15.6-7 15.6-15.6S24.6.4 16 .4zm0 28.5c-2.4 0-4.7-.6-6.7-1.8l-.5-.3-4.7 1.3 1.3-4.6-.3-.5C3.8 20.8 3.2 18.5 3.2 16 3.2 9.2 9.2 3.2 16 3.2S28.8 9.2 28.8 16 22.8 28.9 16 28.9zm7.2-9.6c-.4-.2-2.3-1.1-2.7-1.2-.4-.1-.6-.2-.9.2s-1 1.2-1.2 1.4c-.2.2-.4.3-.8.1-.4-.2-1.6-.6-3-1.8-1.1-1-1.8-2.2-2-2.6-.2-.4 0-.6.2-.8.2-.2.4-.4.6-.7.2-.3.3-.5.4-.8.1-.3 0-.6 0-.8 0-.2-.9-2.2-1.2-3-.3-.8-.6-.7-.9-.7h-.8c-.3 0-.8.1-1.2.6-.4.5-1.5 1.4-1.5 3.4s1.6 3.9 1.8 4.2c.2.3 3.1 4.8 7.6 6.7 1.1.5 1.9.7 2.5.9 1 .3 1.9.3 2.6.2.8-.1 2.3-.9 2.6-1.8.3-.9.3-1.7.2-1.8-.1-.1-.3-.2-.7-.4z" />
-  </svg>
-);
-
-function ChannelButton({
-  href,
-  bg,
-  children,
-}: {
-  href: string;
-  bg: string;
-  children: ReactNode;
-}) {
-  return (
-    <a
-      href={href}
-      target="_blank"
-      rel="noopener noreferrer"
-      className={`flex items-center justify-center gap-3 ${bg} text-white py-3 rounded-xl font-semibold shadow-md max-w-[620px] mx-auto`}
-    >
-      {children}
-    </a>
-  );
-}
 
 type ReviewProduct = {
   id: string;
@@ -94,7 +52,7 @@ function ReviewPreviewCard({ product }: { product: ReviewProduct }) {
   const firstImage = product.image_urls?.[0];
   return (
     <div className="bg-background rounded-xl border border-border overflow-hidden hover:shadow-md transition-shadow">
-      <div className="relative aspect-square bg-muted overflow-hidden">
+      <div className="relative aspect-[4/3] bg-muted overflow-hidden">
         {firstImage ? (
           <img
             src={firstImage}
@@ -142,7 +100,7 @@ export default function Index() {
   return (
     <Layout
       seo={{
-        title: "Achadinhos e Promoções da Shopee, Amazon e Mercado Livre | Achadinhos LM",
+        title: "Achadinhos e Promoções da Shopee, Amazon e Mercado Livre | Saiu Promoção",
         description:
           "Encontre achadinhos, promoções e produtos baratos da Shopee, Amazon e Mercado Livre. Ofertas de beleza, casa, eletrônicos, moda e suplementos com preços baixos.",
         canonical: "/",
@@ -152,27 +110,45 @@ export default function Index() {
     >
       <div className="space-y-6">
         {/* HERO */}
-        <section className="text-center space-y-3 animate-fade-in max-w-[820px] mx-auto">
-          <h1 className="text-2xl font-bold">
-            Achadinhos e Promoções Imperdíveis da Shopee, Amazon e Mercado Livre
+        <section className="text-center space-y-1.5 animate-fade-in max-w-[820px] mx-auto">
+          <h1 className="text-3xl font-bold tracking-tight">
+            Saiu Promoção! 🏷️
           </h1>
-          <p className="text-muted-foreground">
-            Ofertas atualizadas com preços baixos todos os dias.
+          <p className="text-muted-foreground text-sm">
+            Shopee · Amazon · Mercado Livre — todo dia, direto no seu grupo
           </p>
         </section>
 
-        {/* CANAIS */}
-        <section className="space-y-3 px-2">
-          <ChannelButton href="https://chat.whatsapp.com/Bvyh4RUuNA32qVtlHgiZJu" bg="bg-[#128C7E]">
-            <WhatsAppIcon />
-            Grupo VIP no WhatsApp
-          </ChannelButton>
-          <ChannelButton href="https://t.me/achadinhosliviamaiquel" bg="bg-[#229ED9]">
-            <svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor">
-              <path d="M9.04 15.36l-.38 5.36c.55 0 .79-.23 1.08-.51l2.6-2.47 5.39 3.94c.99.55 1.69.26 1.95-.92l3.53-16.53c.31-1.44-.52-2.01-1.48-1.65L1.9 10.15c-1.4.55-1.38 1.34-.24 1.69l4.9 1.53L18.44 6.1c.56-.36 1.08-.16.66.2" />
-            </svg>
-            Canal de ofertas no Telegram
-          </ChannelButton>
+        {/* ——— BANNER GRUPOS ——— */}
+        <section className="rounded-2xl bg-foreground px-5 py-4 flex flex-col sm:flex-row items-center justify-between gap-3">
+          <div className="text-center sm:text-left">
+            <p className="text-sm font-bold text-background">Grupos VIP de ofertas 🔥</p>
+            <p className="text-xs text-background/60">Receba promoções antes de todo mundo</p>
+          </div>
+          <div className="flex flex-col sm:flex-row gap-2 w-full sm:w-auto">
+            <a
+              href="https://chat.whatsapp.com/Bvyh4RUuNA32qVtlHgiZJu"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="flex items-center justify-center gap-2 bg-[#25D366] text-white px-4 py-2.5 rounded-xl text-sm font-semibold"
+            >
+              <svg width="18" height="18" viewBox="0 0 32 32" fill="currentColor" className="shrink-0">
+                <path d="M16 .4C7.4.4.4 7.4.4 16c0 2.8.7 5.6 2.1 8L.3 31.7l7.9-2.1c2.3 1.3 5 2 7.8 2 8.6 0 15.6-7 15.6-15.6S24.6.4 16 .4zm0 28.5c-2.4 0-4.7-.6-6.7-1.8l-.5-.3-4.7 1.3 1.3-4.6-.3-.5C3.8 20.8 3.2 18.5 3.2 16 3.2 9.2 9.2 3.2 16 3.2S28.8 9.2 28.8 16 22.8 28.9 16 28.9zm7.2-9.6c-.4-.2-2.3-1.1-2.7-1.2-.4-.1-.6-.2-.9.2s-1 1.2-1.2 1.4c-.2.2-.4.3-.8.1-.4-.2-1.6-.6-3-1.8-1.1-1-1.8-2.2-2-2.6-.2-.4 0-.6.2-.8.2-.2.4-.4.6-.7.2-.3.3-.5.4-.8.1-.3 0-.6 0-.8 0-.2-.9-2.2-1.2-3-.3-.8-.6-.7-.9-.7h-.8c-.3 0-.8.1-1.2.6-.4.5-1.5 1.4-1.5 3.4s1.6 3.9 1.8 4.2c.2.3 3.1 4.8 7.6 6.7 1.1.5 1.9.7 2.5.9 1 .3 1.9.3 2.6.2.8-.1 2.3-.9 2.6-1.8.3-.9.3-1.7.2-1.8-.1-.1-.3-.2-.7-.4z"/>
+              </svg>
+              Grupo VIP de Ofertas
+            </a>
+            <a
+              href="https://t.me/achadinhosliviamaiquel"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="flex items-center justify-center gap-2 bg-[#229ED9] text-white px-4 py-2.5 rounded-xl text-sm font-semibold"
+            >
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor" className="shrink-0">
+                <path d="M9.04 15.36l-.38 5.36c.55 0 .79-.23 1.08-.51l2.6-2.47 5.39 3.94c.99.55 1.69.26 1.95-.92l3.53-16.53c.31-1.44-.52-2.01-1.48-1.65L1.9 10.15c-1.4.55-1.38 1.34-.24 1.69l4.9 1.53L18.44 6.1c.56-.36 1.08-.16.66.2"/>
+              </svg>
+              Canal de Ofertas
+            </a>
+          </div>
         </section>
 
         {/* ——— POSTADAS AGORA ——— */}
@@ -208,17 +184,6 @@ export default function Index() {
           </section>
         )}
 
-        {/* ——— CATEGORIAS ——— */}
-
-        <section className="space-y-4">
-          <h2 className="text-lg font-semibold">Categorias</h2>
-          <div className="max-w-[950px] mx-auto grid grid-cols-3 gap-4">
-            {CATEGORIES.map((category) => (
-              <CategoryCard key={category} category={category} />
-            ))}
-          </div>
-        </section>
-
         {/* ——— REVIEWS DO INSTAGRAM ——— */}
         {hasReviews && (
           <>
@@ -228,7 +193,7 @@ export default function Index() {
                 <h2 className="text-lg font-semibold">Reviews do Instagram</h2>
                 <p className="text-sm text-muted-foreground">Produtos que testei e aprovei</p>
               </div>
-              <div className="grid grid-cols-2 gap-3">
+              <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
                 {reviewProducts!.slice(0, 4).map((product) => (
                   <ReviewPreviewCard key={product.id} product={product} />
                 ))}
@@ -291,7 +256,7 @@ export default function Index() {
 
         {/* TEXTO SEO */}
         <section className="text-sm text-muted-foreground leading-relaxed max-w-3xl mx-auto text-center pt-6">
-          O Achadinhos LM reúne promoções e produtos baratos da Shopee, Amazon e Mercado Livre.
+          O Saiu Promoção reúne promoções e produtos baratos da Shopee, Amazon e Mercado Livre.
           Aqui você encontra achadinhos de beleza, casa, moda, eletrônicos e suplementos com
           preços que valem a pena. Selecionamos ofertas reais para facilitar sua busca por descontos.
         </section>
