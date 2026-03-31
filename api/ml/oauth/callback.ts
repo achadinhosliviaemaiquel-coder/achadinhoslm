@@ -41,10 +41,9 @@ export default async function handler(req: any, res: any) {
     const raw = (await tokenRes.json().catch(() => ({}))) as any;
 
     if (!tokenRes.ok) {
+      console.error("[ml-oauth/callback] token exchange failed:", JSON.stringify(raw).slice(0, 500));
       res.statusCode = 500;
-      return res.end(
-        `Token exchange failed: ${JSON.stringify(raw).slice(0, 1200)}`,
-      );
+      return res.end("Token exchange failed. Check server logs.");
     }
 
     const access_token = raw.access_token as string | undefined;
@@ -56,10 +55,9 @@ export default async function handler(req: any, res: any) {
 
     // ✅ agora só exige access_token e expires_in
     if (!access_token || !expires_in) {
+      console.error("[ml-oauth/callback] invalid token payload:", JSON.stringify(raw).slice(0, 500));
       res.statusCode = 500;
-      return res.end(
-        `Invalid token payload: ${JSON.stringify(raw).slice(0, 1200)}`,
-      );
+      return res.end("Invalid token payload. Check server logs.");
     }
 
     const expires_at = new Date(Date.now() + expires_in * 1000).toISOString();
@@ -87,8 +85,9 @@ export default async function handler(req: any, res: any) {
     });
 
     if (error) {
+      console.error("[ml-oauth/callback] DB save failed:", error.message);
       res.statusCode = 500;
-      return res.end(`DB save failed: ${error.message}`);
+      return res.end("Failed to save token. Check server logs.");
     }
 
     res.statusCode = 200;
@@ -97,7 +96,8 @@ export default async function handler(req: any, res: any) {
       `OK. Token salvo no Supabase.\nexpires_at=${expires_at}\nrefresh_token=${refresh_token ? "yes" : "no"}\nAgora rode o ml-prices.`,
     );
   } catch (e: any) {
+    console.error("[ml-oauth/callback] crash:", e?.message || String(e));
     res.statusCode = 500;
-    return res.end(`Callback crash: ${e?.message || String(e)}`);
+    return res.end("Internal error. Check server logs.");
   }
 }
