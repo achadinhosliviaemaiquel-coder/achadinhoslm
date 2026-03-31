@@ -19,15 +19,26 @@ function getClientIp(req: VercelRequest) {
 }
 
 export default async function handler(req: VercelRequest, res: VercelResponse) {
+  res.setHeader("Cache-Control", "no-store");
+
   const product_id =
     String((req.query.product_id as string) || "") ||
     String((req.body?.product_id as string) || "");
 
+  const path =
+    String((req.query.path as string) || "") ||
+    String((req.body?.path as string) || "");
+
+  // Modo page-view: registra visita ao site (sem product_id)
+  if (!product_id && path && !path.startsWith("/admin")) {
+    const supabase = getServerSupabase();
+    if (supabase) await supabase.from("page_views").insert({ path });
+    return res.status(204).end();
+  }
+
   const session_id =
     String((req.query.session_id as string) || "") ||
     String((req.body?.session_id as string) || "");
-
-  res.setHeader("Cache-Control", "no-store");
 
   if (!product_id) return res.status(400).send("Missing product_id");
 

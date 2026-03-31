@@ -122,7 +122,7 @@ export function Layout({
     }
     // Rastreia page view no Supabase (ignora admin)
     if (!location.pathname.startsWith("/admin")) {
-      fetch("/api/page-view", {
+      fetch("/api/view", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ path: location.pathname }),
