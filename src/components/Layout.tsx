@@ -112,13 +112,21 @@ export function Layout({
     ],
   };
 
-  // Q36: GA4 rastreia mudança de rota — scripts ficam apenas no index.html
+  // GA4 rastreia mudança de rota
   useEffect(() => {
     const fullPath = `${location.pathname}${location.search || ""}`;
     if ((window as any).gtag) {
       (window as any).gtag("config", "G-L8J2YZRFFP", {
         page_path: fullPath,
       });
+    }
+    // Rastreia page view no Supabase (ignora admin)
+    if (!location.pathname.startsWith("/admin")) {
+      fetch("/api/page-view", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ path: location.pathname }),
+      }).catch(() => {});
     }
   }, [location.pathname, location.search]);
 

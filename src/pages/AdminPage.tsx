@@ -1,6 +1,7 @@
 import AdminBrandsPanel from "@/components/admin/AdminBrandsPanel"
 import AdminSubcategoriesPanel from "@/components/admin/AdminSubcategoriesPanel"
 import ClicksDashboard from "@/components/admin/ClicksDashboard"
+import SiteVisitsDashboard from "@/components/admin/SiteVisitsDashboard"
 import { useEffect, useMemo, useState } from "react"
 import { Link, Navigate, useNavigate, useSearchParams } from "react-router-dom"
 import { Layout } from "@/components/Layout"
@@ -21,14 +22,15 @@ import {
   MousePointerClick,
   Tag,
   Layers,
+  Eye,
 } from "lucide-react"
 import { CATEGORY_LABELS, type ProductCategory } from "@/types/product"
 
-type AdminTab = "list" | "add" | "brands" | "subcategorias" | "clicks"
+type AdminTab = "list" | "add" | "brands" | "subcategorias" | "clicks" | "visitas"
 type Traffic = "all" | "organic" | "ads"
 
 function isAdminTab(v: string | null): v is AdminTab {
-  return v === "list" || v === "add" || v === "brands" || v === "subcategorias" || v === "clicks"
+  return v === "list" || v === "add" || v === "brands" || v === "subcategorias" || v === "clicks" || v === "visitas"
 }
 
 function isTraffic(v: string | null): v is Traffic {
@@ -181,7 +183,7 @@ export default function AdminPage() {
 
         {/* TABS */}
         <Tabs value={activeTab} onValueChange={(v) => setTab(v as AdminTab)}>
-          <TabsList className="grid w-full grid-cols-5">
+          <TabsList className="grid w-full grid-cols-6">
             <TabsTrigger value="list" className="flex items-center gap-2">
               <List className="h-4 w-4" /> Produtos
             </TabsTrigger>
@@ -200,6 +202,10 @@ export default function AdminPage() {
 
             <TabsTrigger value="clicks" className="flex items-center gap-2">
               <MousePointerClick className="h-4 w-4" /> Métricas
+            </TabsTrigger>
+
+            <TabsTrigger value="visitas" className="flex items-center gap-2">
+              <Eye className="h-4 w-4" /> Visitas
             </TabsTrigger>
           </TabsList>
 
@@ -246,6 +252,11 @@ export default function AdminPage() {
           {/* SUBCATEGORIAS */}
           <TabsContent value="subcategorias" className="mt-6">
             <AdminSubcategoriesPanel />
+          </TabsContent>
+
+          {/* VISITAS */}
+          <TabsContent value="visitas" className="mt-6">
+            <SiteVisitsDashboard />
           </TabsContent>
 
           {/* CLICKS / MÉTRICAS */}
